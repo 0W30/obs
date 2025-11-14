@@ -26,13 +26,28 @@ async def lifespan(app: FastAPI):
     Lifespan context manager for startup and shutdown events.
     """
     # Startup
-    logger.info("Starting application...")
+    logger.info("=" * 60)
+    logger.info("Starting Sentry Error Collector...")
+    logger.info("=" * 60)
     try:
         await init_db()
-        logger.info("Database initialized successfully")
+        logger.info("✅ Database initialized successfully")
     except Exception as e:
-        logger.error(f"Failed to initialize database: {str(e)}", exc_info=True)
+        logger.error(f"❌ Failed to initialize database: {str(e)}", exc_info=True)
         raise
+    
+    # Log available routes
+    logger.info("📡 Available endpoints:")
+    logger.info("   GET  / - API info")
+    logger.info("   GET  /health - Health check")
+    logger.info("   GET  /test - Test endpoint")
+    logger.info("   GET  /webhook-info - Webhook info")
+    logger.info("   POST /test-webhook - Test webhook")
+    logger.info("   POST /sentry/webhook - Sentry/GlitchTip webhook")
+    logger.info("   GET  /errors - All errors")
+    logger.info("   GET  /errors/latest - Latest error")
+    logger.info("   GET  /config - Configuration")
+    logger.info("=" * 60)
     
     yield
     
@@ -52,13 +67,22 @@ app = FastAPI(
 class LoggingMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         client_host = request.client.host if request.client else 'unknown'
-        logger.info(f"🔔 INCOMING REQUEST: {request.method} {request.url.path} from {client_host}")
+        path = request.url.path
+        
+        # Skip detailed logging for healthcheck (too noisy)
+        if path == "/health" and request.headers.get('user-agent', '').startswith('Python-urllib'):
+            # Just log briefly for healthcheck
+            response = await call_next(request)
+            return response
+        
+        # Full logging for all other requests
+        logger.info(f"🔔 INCOMING REQUEST: {request.method} {path} from {client_host}")
         logger.info(f"   Full URL: {request.url}")
         logger.info(f"   User-Agent: {request.headers.get('user-agent', 'N/A')}")
         logger.info(f"   Content-Type: {request.headers.get('content-type', 'N/A')}")
         
         response = await call_next(request)
-        logger.info(f"✅ RESPONSE: {response.status_code} for {request.method} {request.url.path}")
+        logger.info(f"✅ RESPONSE: {response.status_code} for {request.method} {path}")
         return response
 
 app.add_middleware(LoggingMiddleware)

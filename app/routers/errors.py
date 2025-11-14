@@ -1,6 +1,7 @@
 """
 API endpoints for retrieving errors.
 """
+import json
 from typing import List
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -27,7 +28,14 @@ async def get_latest_error(db: AsyncSession = Depends(get_db)):
         if error is None:
             return ErrorNotFoundResponse()
         
-        return ErrorResponse.model_validate(error)
+        error_dict = ErrorResponse.model_validate(error).model_dump()
+        # Parse full_payload JSON if exists
+        if error.full_payload:
+            try:
+                error_dict["full_payload"] = json.loads(error.full_payload)
+            except Exception:
+                error_dict["full_payload"] = None
+        return error_dict
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
@@ -43,7 +51,17 @@ async def get_all_errors(db: AsyncSession = Depends(get_db)):
             select(Error).order_by(desc(Error.created_at))
         )
         errors = result.scalars().all()
-        return [ErrorResponse.model_validate(error) for error in errors]
+        result = []
+        for error in errors:
+            error_dict = ErrorResponse.model_validate(error).model_dump()
+            # Parse full_payload JSON if exists
+            if error.full_payload:
+                try:
+                    error_dict["full_payload"] = json.loads(error.full_payload)
+                except Exception:
+                    error_dict["full_payload"] = None
+            result.append(error_dict)
+        return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 

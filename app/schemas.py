@@ -99,16 +99,36 @@ class SentryWebhookPayload(BaseModel):
 
 
 class ErrorResponse(BaseModel):
-    """Schema for error response."""
+    """Schema for error response with full trace information."""
     id: int
     event_id: str
     project: str
+    project_slug: Optional[str] = None
+    project_id: Optional[str] = None
     message: str
     exception_type: Optional[str] = None
     exception_value: Optional[str] = None
     stacktrace: Optional[str] = None
     timestamp: datetime
     created_at: datetime
+    
+    # Additional fields from issue
+    issue_id: Optional[str] = None
+    issue_short_id: Optional[str] = None
+    issue_title: Optional[str] = None
+    issue_culprit: Optional[str] = None
+    issue_permalink: Optional[str] = None
+    issue_level: Optional[str] = None
+    issue_status: Optional[str] = None
+    issue_logger: Optional[str] = None
+    
+    # Additional fields from event
+    event_platform: Optional[str] = None
+    event_logger: Optional[str] = None
+    event_level: Optional[str] = None
+    
+    # Full payload
+    full_payload: Optional[Dict[str, Any]] = None
 
     class Config:
         from_attributes = True

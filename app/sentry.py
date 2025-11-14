@@ -112,23 +112,32 @@ async def sentry_webhook(
             event = payload.data.event
             project = payload.data.project
         
-        # Get project slug/name (handle both Pydantic models and raw dicts)
+        # Get project information (handle both Pydantic models and raw dicts)
         project_name = "unknown"
+        project_slug = None
+        project_id = None
+        
         if project:
             if isinstance(project, dict):
-                project_name = project.get("slug") or project.get("name") or "unknown"
+                project_name = project.get("name") or project.get("slug") or "unknown"
+                project_slug = project.get("slug")
+                project_id = project.get("id")
             else:
-                project_name = project.slug or project.name or "unknown"
+                project_name = project.name or project.slug or "unknown"
+                project_slug = project.slug
+                project_id = project.id
         elif issue:
             if isinstance(issue, dict):
                 issue_project = issue.get("project")
                 if isinstance(issue_project, dict):
-                    project_name = issue_project.get("slug") or issue_project.get("name") or "unknown"
-            elif issue.project:
+                    project_name = issue_project.get("name") or issue_project.get("slug") or "unknown"
+                    project_slug = issue_project.get("slug")
+                    project_id = issue_project.get("id")
+            elif hasattr(issue, 'project') and issue.project:
                 if isinstance(issue.project, dict):
-                    project_name = issue.project.get("slug", "unknown")
-                else:
-                    project_name = "unknown"
+                    project_name = issue.project.get("name") or issue.project.get("slug", "unknown")
+                    project_slug = issue.project.get("slug")
+                    project_id = issue.project.get("id")
         
         # Optional project filtering
         if settings.SENTRY_FILTER_BY_PROJECT and settings.SENTRY_PROJECT:
@@ -246,15 +255,80 @@ async def sentry_webhook(
                     stacktrace_lines.append(frame_str)
                 stacktrace = "\n".join(stacktrace_lines)
         
-        # Create new error record
+        # Extract additional issue fields
+        issue_id = None
+        issue_short_id = None
+        issue_title = None
+        issue_culprit = None
+        issue_permalink = None
+        issue_level = None
+        issue_status = None
+        issue_logger = None
+        
+        if issue:
+            if isinstance(issue, dict):
+                issue_id = issue.get("id")
+                issue_short_id = issue.get("shortId")
+                issue_title = issue.get("title")
+                issue_culprit = issue.get("culprit")
+                issue_permalink = issue.get("permalink")
+                issue_level = issue.get("level")
+                issue_status = issue.get("status")
+                issue_logger = issue.get("logger")
+            else:
+                issue_id = issue.id
+                issue_short_id = issue.shortId
+                issue_title = issue.title
+                issue_culprit = issue.culprit
+                issue_permalink = issue.permalink
+                issue_level = issue.level
+                issue_status = issue.status
+                issue_logger = issue.logger
+        
+        # Extract additional event fields
+        event_platform = None
+        event_logger = None
+        event_level = None
+        
+        if event:
+            if isinstance(event, dict):
+                event_platform = event.get("platform")
+                event_logger = event.get("logger")
+                event_level = event.get("level")
+            else:
+                event_platform = event.platform
+                event_logger = event.logger
+                event_level = event.level
+        
+        # Store full payload as JSON for complete trace
+        full_payload_json = json.dumps(payload_dict, indent=2, default=str)
+        
+        # Create new error record with full trace information
         new_error = Error(
             event_id=event_id,
             project=project_name,
+            project_slug=project_slug,
+            project_id=project_id,
             message=message,
             exception_type=exception_type,
             exception_value=exception_value,
             stacktrace=stacktrace,
-            timestamp=error_timestamp
+            timestamp=error_timestamp,
+            # Issue fields
+            issue_id=issue_id,
+            issue_short_id=issue_short_id,
+            issue_title=issue_title,
+            issue_culprit=issue_culprit,
+            issue_permalink=issue_permalink,
+            issue_level=issue_level,
+            issue_status=issue_status,
+            issue_logger=issue_logger,
+            # Event fields
+            event_platform=event_platform,
+            event_logger=event_logger,
+            event_level=event_level,
+            # Full payload
+            full_payload=full_payload_json
         )
         
         db.add(new_error)
