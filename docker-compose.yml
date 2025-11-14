@@ -5,7 +5,7 @@ services:
     build: .
     container_name: sentry-error-collector
     ports:
-      - "8002:8002"
+      - "8002:8000"
     volumes:
       - ./data:/data
     environment:
