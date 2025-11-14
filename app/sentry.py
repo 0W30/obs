@@ -25,13 +25,19 @@ async def sentry_webhook(
     Handle Sentry webhook POST request.
     Validates payload and saves error to database.
     """
+    logger.info("=== Webhook endpoint called ===")
+    logger.info(f"Request method: {request.method}")
+    logger.info(f"Request URL: {request.url}")
+    logger.info(f"Request headers: {dict(request.headers)}")
+    
     try:
         # Parse JSON manually to handle validation errors better
         try:
             payload_dict = await request.json()
             logger.info(f"Received webhook payload keys: {list(payload_dict.keys())}")
+            logger.info(f"Payload action: {payload_dict.get('action', 'N/A')}")
         except Exception as e:
-            logger.error(f"Failed to parse JSON: {str(e)}")
+            logger.error(f"Failed to parse JSON: {str(e)}", exc_info=True)
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Invalid JSON: {str(e)}"
