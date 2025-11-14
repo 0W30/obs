@@ -2,6 +2,7 @@
 FastAPI application main file.
 """
 import logging
+from datetime import datetime
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -47,12 +48,17 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Add logging middleware to log all requests
+# Add logging middleware to log all requests (including webhooks)
 class LoggingMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        logger.info(f"Incoming request: {request.method} {request.url.path} from {request.client.host if request.client else 'unknown'}")
+        client_host = request.client.host if request.client else 'unknown'
+        logger.info(f"🔔 INCOMING REQUEST: {request.method} {request.url.path} from {client_host}")
+        logger.info(f"   Full URL: {request.url}")
+        logger.info(f"   User-Agent: {request.headers.get('user-agent', 'N/A')}")
+        logger.info(f"   Content-Type: {request.headers.get('content-type', 'N/A')}")
+        
         response = await call_next(request)
-        logger.info(f"Response: {response.status_code} for {request.method} {request.url.path}")
+        logger.info(f"✅ RESPONSE: {response.status_code} for {request.method} {request.url.path}")
         return response
 
 app.add_middleware(LoggingMiddleware)
@@ -119,16 +125,55 @@ async def test_webhook(request: Request):
     """
     Test endpoint to check if webhook endpoint is reachable.
     """
-    logger.info("Test webhook endpoint called")
+    logger.info("🧪 TEST WEBHOOK ENDPOINT CALLED")
     try:
         body = await request.body()
-        logger.info(f"Test webhook body: {body.decode('utf-8', errors='ignore')[:500]}")
+        body_str = body.decode('utf-8', errors='ignore')
+        logger.info(f"Test webhook body: {body_str[:1000]}")
         return {
             "status": "received",
             "message": "Test webhook endpoint is working",
-            "body_length": len(body)
+            "body_length": len(body),
+            "timestamp": datetime.now().isoformat()
         }
     except Exception as e:
         logger.error(f"Error in test webhook: {str(e)}", exc_info=True)
         return {"status": "error", "message": str(e)}
+
+
+@app.get("/test")
+async def test():
+    """
+    Simple test endpoint to verify server is running.
+    """
+    logger.info("🧪 TEST ENDPOINT CALLED")
+    return {
+        "status": "ok",
+        "message": "Server is running",
+        "timestamp": datetime.now().isoformat(),
+        "webhook_url": "/sentry/webhook",
+        "note": "If GlitchTip can't reach this server, check: 1) Server must be publicly accessible, 2) Use HTTPS if required, 3) Check firewall/port settings"
+    }
+
+
+@app.get("/webhook-info")
+async def webhook_info():
+    """
+    Information about webhook endpoint for GlitchTip configuration.
+    """
+    return {
+        "webhook_endpoint": "/sentry/webhook",
+        "method": "POST",
+        "content_type": "application/json",
+        "required_fields": {
+            "action": "created (for new issues)",
+            "data": {
+                "issue": "Issue information",
+                "event": "Event information (optional)",
+                "project": "Project information (optional)"
+            }
+        },
+        "example_url": "http://your-server:8002/sentry/webhook",
+        "note": "Make sure your server is publicly accessible from the internet"
+    }
 
