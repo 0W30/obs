@@ -67,6 +67,9 @@ class SentryWebhookData(BaseModel):
     issue: Optional[SentryIssue] = None
     event: Optional[SentryEvent] = None
     project: Optional[SentryProject] = None
+    
+    class Config:
+        extra = "allow"  # Allow extra fields
 
 
 class SentryWebhookPayload(BaseModel):
@@ -85,9 +88,9 @@ class SentryWebhookPayload(BaseModel):
         "actor": {...}
     }
     """
-    action: str  # created, resolved, assigned, etc.
+    action: Optional[str] = None  # created, resolved, assigned, etc.
     installation: Optional[Dict[str, Any]] = None
-    data: SentryWebhookData
+    data: Optional[SentryWebhookData] = None
     actor: Optional[Dict[str, Any]] = None
 
     class Config:

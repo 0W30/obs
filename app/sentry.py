@@ -1,9 +1,10 @@
 """
 Sentry webhook handler.
 """
+import json
 import logging
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.database import get_db
@@ -17,7 +18,7 @@ router = APIRouter(prefix="/sentry", tags=["sentry"])
 
 @router.post("/webhook", status_code=status.HTTP_201_CREATED)
 async def sentry_webhook(
-    payload: SentryWebhookPayload,
+    request: Request,
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -25,12 +26,51 @@ async def sentry_webhook(
     Validates payload and saves error to database.
     """
     try:
+        # Parse JSON manually to handle validation errors better
+        try:
+            payload_dict = await request.json()
+            logger.info(f"Received webhook payload keys: {list(payload_dict.keys())}")
+        except Exception as e:
+            logger.error(f"Failed to parse JSON: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid JSON: {str(e)}"
+            )
+        
+        # Validate payload with Pydantic
+        try:
+            payload = SentryWebhookPayload(**payload_dict)
+            logger.debug(f"Payload validated successfully. Action: {payload.action}")
+        except Exception as validation_error:
+            from pydantic import ValidationError
+            if isinstance(validation_error, ValidationError):
+                error_messages = []
+                for err in validation_error.errors():
+                    error_messages.append(f"{'.'.join(str(loc) for loc in err['loc'])}: {err['msg']}")
+                error_detail = "; ".join(error_messages)
+                logger.error(f"Validation error: {error_detail}")
+                logger.error(f"Payload structure (first 2000 chars): {json.dumps(payload_dict, indent=2, default=str)[:2000]}")
+            else:
+                error_detail = str(validation_error)
+                logger.error(f"Validation error: {error_detail}")
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Validation error: {error_detail}"
+            )
         # Only process "created" actions (new issues)
-        if payload.action != "created":
-            logger.info(f"Ignoring webhook action: {payload.action} (only processing 'created')")
-            return {"message": f"Action '{payload.action}' ignored, only 'created' actions are processed"}
+        action = payload.action or "unknown"
+        if action != "created":
+            logger.info(f"Ignoring webhook action: {action} (only processing 'created')")
+            return {"message": f"Action '{action}' ignored, only 'created' actions are processed"}
         
         # Extract data from Sentry webhook payload
+        if not payload.data:
+            logger.error("Webhook payload missing 'data' field")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Webhook payload missing 'data' field"
+            )
+        
         issue = payload.data.issue
         event = payload.data.event
         project = payload.data.project
