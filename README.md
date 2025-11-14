@@ -86,19 +86,71 @@ SENTRY_FILTER_BY_PROJECT=false
 
 ## 📝 Формат Webhook от Sentry
 
+Реальный формат webhook от Sentry имеет следующую структуру:
+
 ```json
 {
-  "event_id": "uuid",
-  "project": "string",
-  "message": "string",
-  "timestamp": 1234567890,
-  "exception": {
-    "type": "ValueError",
-    "value": "Something bad happened",
-    "stacktrace": "stacktrace here..."
+  "action": "created",
+  "installation": {
+    "uuid": "...",
+    "status": "installed"
+  },
+  "data": {
+    "issue": {
+      "id": "123456",
+      "shortId": "ABC-1",
+      "title": "Error message",
+      "culprit": "file.py in function",
+      "permalink": "https://sentry.io/...",
+      "level": "error",
+      "status": "unresolved",
+      "project": {
+        "id": "123",
+        "name": "My Project",
+        "slug": "my-project"
+      }
+    },
+    "event": {
+      "event_id": "abc123...",
+      "message": "Error message",
+      "title": "Error title",
+      "platform": "python",
+      "timestamp": 1234567890.123,
+      "level": "error",
+      "logger": "root",
+      "exceptions": [
+        {
+          "type": "ValueError",
+          "value": "Something bad happened",
+          "mechanism": {...}
+        }
+      ],
+      "stacktrace": {
+        "frames": [
+          {
+            "filename": "file.py",
+            "function": "function_name",
+            "lineno": 42,
+            "abs_path": "/path/to/file.py"
+          }
+        ]
+      }
+    },
+    "project": {
+      "id": "123",
+      "name": "My Project",
+      "slug": "my-project"
+    }
+  },
+  "actor": {
+    "type": "user",
+    "id": "123",
+    "name": "User Name"
   }
 }
 ```
+
+**Важно:** Сервис обрабатывает только webhook с `action: "created"` (новые ошибки). Другие действия (resolved, assigned и т.д.) игнорируются.
 
 ## 🐳 Docker
 

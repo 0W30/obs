@@ -2,30 +2,97 @@
 Pydantic schemas for request/response validation.
 """
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Dict, Any, List
 from pydantic import BaseModel, Field
 
 
-class ExceptionInfo(BaseModel):
+class SentryException(BaseModel):
     """Schema for exception information from Sentry."""
-    type: str = Field(..., alias="type")
-    value: str = Field(..., alias="value")
-    stacktrace: Optional[str] = Field(None, alias="stacktrace")
+    type: Optional[str] = None
+    value: Optional[str] = None
+    mechanism: Optional[Dict[str, Any]] = None
 
-    class Config:
-        populate_by_name = True
+
+class SentryStacktraceFrame(BaseModel):
+    """Schema for stacktrace frame."""
+    filename: Optional[str] = None
+    function: Optional[str] = None
+    lineno: Optional[int] = None
+    abs_path: Optional[str] = None
+
+
+class SentryStacktrace(BaseModel):
+    """Schema for stacktrace."""
+    frames: Optional[List[SentryStacktraceFrame]] = None
+
+
+class SentryEvent(BaseModel):
+    """Schema for Sentry event data."""
+    event_id: Optional[str] = None
+    message: Optional[str] = None
+    title: Optional[str] = None
+    platform: Optional[str] = None
+    timestamp: Optional[float] = None
+    level: Optional[str] = None
+    logger: Optional[str] = None
+    exceptions: Optional[List[SentryException]] = None
+    stacktrace: Optional[SentryStacktrace] = None
+    tags: Optional[Dict[str, str]] = None
+    extra: Optional[Dict[str, Any]] = None
+
+
+class SentryIssue(BaseModel):
+    """Schema for Sentry issue data."""
+    id: Optional[str] = None
+    shortId: Optional[str] = None
+    title: Optional[str] = None
+    culprit: Optional[str] = None
+    permalink: Optional[str] = None
+    logger: Optional[str] = None
+    level: Optional[str] = None
+    status: Optional[str] = None
+    assignedTo: Optional[Dict[str, Any]] = None
+    project: Optional[Dict[str, Any]] = None
+
+
+class SentryProject(BaseModel):
+    """Schema for Sentry project data."""
+    id: Optional[str] = None
+    name: Optional[str] = None
+    slug: Optional[str] = None
+
+
+class SentryWebhookData(BaseModel):
+    """Schema for Sentry webhook data section."""
+    issue: Optional[SentryIssue] = None
+    event: Optional[SentryEvent] = None
+    project: Optional[SentryProject] = None
 
 
 class SentryWebhookPayload(BaseModel):
-    """Schema for Sentry webhook payload."""
-    event_id: str
-    project: str
-    message: str
-    timestamp: int
-    exception: Optional[ExceptionInfo] = None
+    """
+    Schema for Sentry webhook payload.
+    
+    Real Sentry webhook structure:
+    {
+        "action": "created",  # created, resolved, assigned, etc.
+        "installation": {...},
+        "data": {
+            "issue": {...},
+            "event": {...},
+            "project": {...}
+        },
+        "actor": {...}
+    }
+    """
+    action: str  # created, resolved, assigned, etc.
+    installation: Optional[Dict[str, Any]] = None
+    data: SentryWebhookData
+    actor: Optional[Dict[str, Any]] = None
 
     class Config:
         populate_by_name = True
+        extra = "allow"  # Allow extra fields for flexibility
 
 
 class ErrorResponse(BaseModel):
