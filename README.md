@@ -27,13 +27,8 @@ docker-compose up --build
 Создайте файл `.env` или установите переменные окружения:
 
 ```bash
-# Обязательные (для фильтрации по проекту)
-SENTRY_PROJECT=my-project          # Slug проекта в Sentry
-SENTRY_ORGANIZATION=my-org         # Slug организации в Sentry
-
-# Опциональные
-SENTRY_DSN=https://xxx@xxx.ingest.sentry.io/xxx  # DSN для отправки ошибок
-SENTRY_FILTER_BY_PROJECT=false     # Фильтровать webhook по проекту (true/false)
+# Sentry DSN (опционально, для отправки ошибок в Sentry)
+SENTRY_DSN=https://xxx@xxx.ingest.sentry.io/xxx
 
 # База данных
 DATABASE_URL=sqlite+aiosqlite:///./data/errors.db
@@ -44,9 +39,7 @@ DATABASE_URL=sqlite+aiosqlite:///./data/errors.db
 В `docker-compose.yml` переменные уже настроены. Установите их через `.env` файл или экспортируйте:
 
 ```bash
-export SENTRY_PROJECT=my-project
-export SENTRY_ORGANIZATION=my-org
-export SENTRY_FILTER_BY_PROJECT=true
+export SENTRY_DSN=https://xxx@xxx.ingest.sentry.io/xxx
 
 docker-compose up
 ```
@@ -54,14 +47,8 @@ docker-compose up
 Или создайте `.env` файл в корне проекта:
 
 ```env
-SENTRY_PROJECT=my-project
-SENTRY_ORGANIZATION=my-org
-SENTRY_FILTER_BY_PROJECT=false
+SENTRY_DSN=https://xxx@xxx.ingest.sentry.io/xxx
 ```
-
-### Фильтрация по проекту
-
-Если `SENTRY_FILTER_BY_PROJECT=true`, сервис будет принимать webhook только от указанного проекта (`SENTRY_PROJECT`). Ошибки от других проектов будут отклоняться с кодом 403.
 
 ## 📡 API Endpoints
 
@@ -164,9 +151,7 @@ docker build -t sentry-error-collector .
 
 ```bash
 docker run -p 8000:8000 \
-  -e SENTRY_PROJECT=my-project \
-  -e SENTRY_ORGANIZATION=my-org \
-  -e SENTRY_FILTER_BY_PROJECT=false \
+  -e SENTRY_DSN=https://xxx@xxx.ingest.sentry.io/xxx \
   -v $(pwd)/data:/data \
   sentry-error-collector
 ```
@@ -180,6 +165,5 @@ SQLite база данных сохраняется в директории `./d
 ## 🔒 Безопасность
 
 - Webhook не требует аутентификации (можно добавить в будущем)
-- При включенной фильтрации по проекту, только указанный проект может отправлять webhook
 - DSN не отображается в API endpoints
 

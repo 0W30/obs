@@ -9,7 +9,6 @@ from sqlalchemy import select
 from app.database import get_db
 from app.models import Error
 from app.schemas import SentryWebhookPayload
-from app.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -24,9 +23,6 @@ async def sentry_webhook(
     """
     Handle Sentry webhook POST request.
     Validates payload and saves error to database.
-    
-    If SENTRY_FILTER_BY_PROJECT is enabled and SENTRY_PROJECT is set,
-    only accepts webhooks from the specified project.
     """
     try:
         # Only process "created" actions (new issues)
@@ -52,19 +48,6 @@ async def sentry_webhook(
             event_id = event.event_id
         elif issue and issue.id:
             event_id = issue.id
-        
-        # Validate project if filtering is enabled
-        if settings.SENTRY_FILTER_BY_PROJECT and settings.SENTRY_PROJECT:
-            if project_name != settings.SENTRY_PROJECT:
-                logger.warning(
-                    f"Rejected webhook from project '{project_name}'. "
-                    f"Expected project: '{settings.SENTRY_PROJECT}'"
-                )
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail=f"Webhook from project '{project_name}' is not allowed. "
-                           f"Expected project: '{settings.SENTRY_PROJECT}'"
-                )
         
         logger.info(f"Received webhook action: {payload.action}, project: {project_name}, event_id: {event_id}")
         

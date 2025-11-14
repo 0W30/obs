@@ -75,9 +75,6 @@ async def root():
             "config": "/config"
         },
         "sentry_config": {
-            "project": settings.SENTRY_PROJECT or "not configured",
-            "organization": settings.SENTRY_ORGANIZATION or "not configured",
-            "filter_by_project": settings.SENTRY_FILTER_BY_PROJECT,
             "dsn_configured": bool(settings.SENTRY_DSN)
         }
     }
@@ -90,9 +87,6 @@ async def get_config():
     """
     return {
         "sentry": {
-            "project": settings.SENTRY_PROJECT or None,
-            "organization": settings.SENTRY_ORGANIZATION or None,
-            "filter_by_project": settings.SENTRY_FILTER_BY_PROJECT,
             "dsn_configured": bool(settings.SENTRY_DSN)
         },
         "database": {
