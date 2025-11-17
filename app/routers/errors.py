@@ -28,14 +28,42 @@ async def get_latest_error(db: AsyncSession = Depends(get_db)):
         if error is None:
             return ErrorNotFoundResponse()
         
-        error_dict = ErrorResponse.model_validate(error).model_dump()
-        # Parse full_payload JSON if exists
+        # Parse full_payload JSON before validation
+        full_payload_dict = None
         if error.full_payload:
             try:
-                error_dict["full_payload"] = json.loads(error.full_payload)
+                full_payload_dict = json.loads(error.full_payload)
             except Exception:
-                error_dict["full_payload"] = None
-        return error_dict
+                full_payload_dict = None
+        
+        # Create error dict manually to avoid validation issues
+        error_dict = {
+            "id": error.id,
+            "event_id": error.event_id,
+            "project": error.project,
+            "project_slug": error.project_slug,
+            "project_id": error.project_id,
+            "message": error.message,
+            "exception_type": error.exception_type,
+            "exception_value": error.exception_value,
+            "stacktrace": error.stacktrace,
+            "timestamp": error.timestamp,
+            "created_at": error.created_at,
+            "issue_id": error.issue_id,
+            "issue_short_id": error.issue_short_id,
+            "issue_title": error.issue_title,
+            "issue_culprit": error.issue_culprit,
+            "issue_permalink": error.issue_permalink,
+            "issue_level": error.issue_level,
+            "issue_status": error.issue_status,
+            "issue_logger": error.issue_logger,
+            "event_platform": error.event_platform,
+            "event_logger": error.event_logger,
+            "event_level": error.event_level,
+            "full_payload": full_payload_dict,
+        }
+        
+        return ErrorResponse.model_validate(error_dict)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
@@ -53,14 +81,42 @@ async def get_all_errors(db: AsyncSession = Depends(get_db)):
         errors = result.scalars().all()
         result = []
         for error in errors:
-            error_dict = ErrorResponse.model_validate(error).model_dump()
-            # Parse full_payload JSON if exists
+            # Parse full_payload JSON before validation
+            full_payload_dict = None
             if error.full_payload:
                 try:
-                    error_dict["full_payload"] = json.loads(error.full_payload)
+                    full_payload_dict = json.loads(error.full_payload)
                 except Exception:
-                    error_dict["full_payload"] = None
-            result.append(error_dict)
+                    full_payload_dict = None
+            
+            # Create error dict manually to avoid validation issues
+            error_dict = {
+                "id": error.id,
+                "event_id": error.event_id,
+                "project": error.project,
+                "project_slug": error.project_slug,
+                "project_id": error.project_id,
+                "message": error.message,
+                "exception_type": error.exception_type,
+                "exception_value": error.exception_value,
+                "stacktrace": error.stacktrace,
+                "timestamp": error.timestamp,
+                "created_at": error.created_at,
+                "issue_id": error.issue_id,
+                "issue_short_id": error.issue_short_id,
+                "issue_title": error.issue_title,
+                "issue_culprit": error.issue_culprit,
+                "issue_permalink": error.issue_permalink,
+                "issue_level": error.issue_level,
+                "issue_status": error.issue_status,
+                "issue_logger": error.issue_logger,
+                "event_platform": error.event_platform,
+                "event_logger": error.event_logger,
+                "event_level": error.event_level,
+                "full_payload": full_payload_dict,
+            }
+            
+            result.append(ErrorResponse.model_validate(error_dict))
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
