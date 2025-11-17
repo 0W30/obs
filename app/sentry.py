@@ -16,6 +16,8 @@ Sentry/GlitchTip webhook receiver.
 """
 import json
 import logging
+import re
+import hashlib
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -28,6 +30,152 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/sentry", tags=["sentry"])
+
+
+async def _process_glitchtip_webhook(payload_dict: dict, db: AsyncSession):
+    """
+    Process GlitchTip webhook in Slack/Microsoft Teams format.
+    
+    Format:
+    {
+        "alias": "GlitchTip",
+        "text": "GlitchTip Alert",
+        "attachments": [{
+            "title": "Error message",
+            "title_link": "http://.../issues/4",
+            "fields": [
+                {"title": "Project", "value": "back"},
+                {"title": "Environment", "value": "development"},
+                ...
+            ]
+        }],
+        "sections": [{
+            "activityTitle": "Error message",
+            "activitySubtitle": "[View Issue BACK-4](http://...)"
+        }]
+    }
+    """
+    try:
+        attachments = payload_dict.get("attachments", [])
+        if not attachments:
+            logger.warning("GlitchTip webhook has no attachments")
+            return
+        
+        attachment = attachments[0]  # Use first attachment
+        
+        # Extract message/error title
+        message = attachment.get("title") or "No message"
+        
+        # Extract project information from fields
+        project_name = "unknown"
+        project_slug = None
+        environment = None
+        server_name = None
+        
+        fields = attachment.get("fields", [])
+        for field in fields:
+            field_title = field.get("title", "").lower()
+            field_value = field.get("value", "")
+            if field_title == "project":
+                project_name = field_value
+                project_slug = field_value
+            elif field_title == "environment":
+                environment = field_value
+            elif field_title == "server name":
+                server_name = field_value
+        
+        # Optional project filtering
+        if settings.SENTRY_FILTER_BY_PROJECT and settings.SENTRY_PROJECT:
+            if project_name != settings.SENTRY_PROJECT:
+                logger.warning(
+                    f"Rejected GlitchTip webhook from project '{project_name}'. "
+                    f"Expected project: '{settings.SENTRY_PROJECT}'"
+                )
+                return
+        
+        # Extract issue information from title_link or sections
+        issue_permalink = attachment.get("title_link")
+        issue_id = None
+        issue_short_id = None
+        
+        if issue_permalink:
+            # Try to extract issue ID from URL (e.g., /issues/4)
+            match = re.search(r'/issues/(\d+)', issue_permalink)
+            if match:
+                issue_id = match.group(1)
+        
+        # Try to extract short ID from sections
+        sections = payload_dict.get("sections", [])
+        if sections and len(sections) > 0:
+            activity_subtitle = sections[0].get("activitySubtitle", "")
+            # Extract short ID like "BACK-4" from "[View Issue BACK-4](...)"
+            match = re.search(r'\[View Issue\s+([^\]]+)\]', activity_subtitle)
+            if match:
+                issue_short_id = match.group(1).strip()
+        
+        # Extract exception type from message (e.g., "AttributeError: ...")
+        exception_type = None
+        exception_value = None
+        if message and ":" in message:
+            parts = message.split(":", 1)
+            if len(parts) == 2:
+                exception_type = parts[0].strip()
+                exception_value = parts[1].strip()
+        
+        # Generate event_id from issue_id or use hash of message
+        if issue_id:
+            event_id = f"glitchtip-{issue_id}"
+        else:
+            event_id = f"glitchtip-{hashlib.md5(message.encode()).hexdigest()[:8]}"
+        
+        # Check if error with this event_id already exists
+        result = await db.execute(
+            select(Error).where(Error.event_id == event_id)
+        )
+        existing_error = result.scalar_one_or_none()
+        
+        if existing_error:
+            logger.warning(f"Error with event_id {event_id} already exists")
+            return
+        
+        # Create new error record
+        new_error = Error(
+            event_id=event_id,
+            project=project_name,
+            project_slug=project_slug,
+            project_id=None,
+            message=message,
+            exception_type=exception_type,
+            exception_value=exception_value,
+            stacktrace=None,  # Not available in GlitchTip format
+            timestamp=datetime.now(),
+            # Issue fields
+            issue_id=issue_id,
+            issue_short_id=issue_short_id,
+            issue_title=message,
+            issue_culprit=None,
+            issue_permalink=issue_permalink,
+            issue_level=None,
+            issue_status=None,
+            issue_logger=None,
+            # Event fields
+            event_platform=None,
+            event_logger=None,
+            event_level=None,
+            # Full payload
+            full_payload=json.dumps(payload_dict, indent=2, default=str)
+        )
+        
+        db.add(new_error)
+        await db.commit()
+        await db.refresh(new_error)
+        
+        logger.info(f"Successfully saved GlitchTip error with event_id {event_id}, project: {project_name}")
+        
+    except Exception as e:
+        await db.rollback()
+        logger.error(f"Error processing GlitchTip webhook: {str(e)}", exc_info=True)
+        raise
 
 
 @router.post("/webhook", status_code=status.HTTP_201_CREATED)
@@ -73,6 +221,20 @@ async def sentry_webhook(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Invalid JSON: {str(e)}"
             )
+        
+        # Check if this is a GlitchTip Slack/Microsoft Teams format webhook
+        is_glitchtip_format = (
+            "alias" in payload_dict and 
+            "attachments" in payload_dict and 
+            isinstance(payload_dict.get("attachments"), list) and
+            len(payload_dict.get("attachments", [])) > 0
+        )
+        
+        if is_glitchtip_format:
+            logger.info("Detected GlitchTip Slack/Microsoft Teams webhook format")
+            # Process GlitchTip format webhook
+            await _process_glitchtip_webhook(payload_dict, db)
+            return {"message": "GlitchTip webhook processed successfully"}
         
         # Validate payload with Pydantic (try flexible validation)
         try:
