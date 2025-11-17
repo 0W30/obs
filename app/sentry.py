@@ -1,5 +1,18 @@
 """
-Sentry webhook handler.
+Sentry/GlitchTip webhook receiver.
+
+ВАЖНО: Этот сервис НЕ подключается к Sentry!
+Он только ПРИНИМАЕТ webhook запросы от Sentry/GlitchTip.
+
+Архитектура:
+1. Ваш проект → Sentry SDK → отправляет ошибки в Sentry/GlitchTip
+2. Sentry/GlitchTip → отправляет webhook POST запрос на этот сервис
+3. Этот сервис → принимает webhook и сохраняет в БД
+
+Настройка:
+- В Sentry/GlitchTip настройте webhook URL: http://your-server:8002/sentry/webhook
+- Sentry/GlitchTip сам будет отправлять запросы на этот endpoint
+- Этот сервис просто слушает и принимает входящие POST запросы
 """
 import json
 import logging
@@ -23,8 +36,17 @@ async def sentry_webhook(
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Handle Sentry webhook POST request.
-    Validates payload and saves error to database.
+    Handle Sentry/GlitchTip webhook POST request.
+    
+    Этот endpoint ПРИНИМАЕТ webhook от Sentry/GlitchTip.
+    Sentry/GlitchTip сам отправляет POST запросы на этот URL.
+    
+    Настройка в Sentry/GlitchTip:
+    - Settings → Integrations → Webhooks
+    - URL: http://your-server:8002/sentry/webhook
+    - События: Issue Created
+    
+    Этот сервис НЕ подключается к Sentry - он только слушает входящие запросы.
     """
     logger.info("=" * 60)
     logger.info("🔔 WEBHOOK ENDPOINT CALLED - /sentry/webhook")

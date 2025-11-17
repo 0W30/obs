@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import declarative_base
+from sqlalchemy import text
 from app.config import settings
 
 # Database URL
@@ -56,10 +57,46 @@ async def get_db():
             await session.close()
 
 
+async def migrate_db():
+    """
+    Migrate database schema - add missing columns to existing tables.
+    """
+    async with engine.begin() as conn:
+        # Check if project_slug column exists in errors table
+        def check_and_add_columns(sync_conn):
+            try:
+                # Check if table exists
+                result = sync_conn.execute(
+                    text("SELECT name FROM sqlite_master WHERE type='table' AND name='errors'")
+                )
+                if not result.fetchone():
+                    return  # Table doesn't exist yet, will be created by create_all
+                
+                # Check if project_slug column exists using PRAGMA
+                result = sync_conn.execute(
+                    text("PRAGMA table_info(errors)")
+                )
+                columns = [row[1] for row in result.fetchall()]
+                
+                if 'project_slug' not in columns:
+                    # Column doesn't exist, add it
+                    sync_conn.execute(text("ALTER TABLE errors ADD COLUMN project_slug VARCHAR"))
+                    sync_conn.commit()
+            except Exception as e:
+                # Log error but don't fail - migration is best effort
+                import logging
+                logging.getLogger(__name__).warning(f"Migration warning: {e}")
+        
+        await conn.run_sync(check_and_add_columns)
+
+
 async def init_db():
     """
-    Initialize database - create tables if they don't exist.
+    Initialize database - create tables if they don't exist and migrate schema.
     """
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    
+    # Run migrations to add any missing columns
+    await migrate_db()
 
