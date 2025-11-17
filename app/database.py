@@ -72,15 +72,27 @@ async def migrate_db():
                 if not result.fetchone():
                     return  # Table doesn't exist yet, will be created by create_all
                 
-                # Check if project_slug column exists using PRAGMA
+                # Check if columns exist using PRAGMA
                 result = sync_conn.execute(
                     text("PRAGMA table_info(errors)")
                 )
                 columns = [row[1] for row in result.fetchall()]
                 
+                # Add missing columns
                 if 'project_slug' not in columns:
-                    # Column doesn't exist, add it
                     sync_conn.execute(text("ALTER TABLE errors ADD COLUMN project_slug VARCHAR"))
+                    sync_conn.commit()
+                
+                if 'breadcrumbs' not in columns:
+                    sync_conn.execute(text("ALTER TABLE errors ADD COLUMN breadcrumbs TEXT"))
+                    sync_conn.commit()
+                
+                if 'stacktrace_files' not in columns:
+                    sync_conn.execute(text("ALTER TABLE errors ADD COLUMN stacktrace_files TEXT"))
+                    sync_conn.commit()
+                
+                if 'stacktrace_detailed' not in columns:
+                    sync_conn.execute(text("ALTER TABLE errors ADD COLUMN stacktrace_detailed TEXT"))
                     sync_conn.commit()
             except Exception as e:
                 # Log error but don't fail - migration is best effort

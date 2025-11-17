@@ -28,13 +28,27 @@ async def get_latest_error(db: AsyncSession = Depends(get_db)):
         if error is None:
             return ErrorNotFoundResponse()
         
-        # Parse full_payload JSON before validation
+        # Parse JSON fields before validation
         full_payload_dict = None
         if error.full_payload:
             try:
                 full_payload_dict = json.loads(error.full_payload)
             except Exception:
                 full_payload_dict = None
+        
+        breadcrumbs_dict = None
+        if error.breadcrumbs:
+            try:
+                breadcrumbs_dict = json.loads(error.breadcrumbs)
+            except Exception:
+                breadcrumbs_dict = None
+        
+        stacktrace_files_list = None
+        if error.stacktrace_files:
+            try:
+                stacktrace_files_list = json.loads(error.stacktrace_files)
+            except Exception:
+                stacktrace_files_list = None
         
         # Create error dict manually to avoid validation issues
         error_dict = {
@@ -60,6 +74,9 @@ async def get_latest_error(db: AsyncSession = Depends(get_db)):
             "event_platform": error.event_platform,
             "event_logger": error.event_logger,
             "event_level": error.event_level,
+            "breadcrumbs": breadcrumbs_dict,
+            "stacktrace_files": stacktrace_files_list,
+            "stacktrace_detailed": error.stacktrace_detailed,
             "full_payload": full_payload_dict,
         }
         
@@ -81,13 +98,27 @@ async def get_all_errors(db: AsyncSession = Depends(get_db)):
         errors = result.scalars().all()
         result = []
         for error in errors:
-            # Parse full_payload JSON before validation
+            # Parse JSON fields before validation
             full_payload_dict = None
             if error.full_payload:
                 try:
                     full_payload_dict = json.loads(error.full_payload)
                 except Exception:
                     full_payload_dict = None
+            
+            breadcrumbs_dict = None
+            if error.breadcrumbs:
+                try:
+                    breadcrumbs_dict = json.loads(error.breadcrumbs)
+                except Exception:
+                    breadcrumbs_dict = None
+            
+            stacktrace_files_list = None
+            if error.stacktrace_files:
+                try:
+                    stacktrace_files_list = json.loads(error.stacktrace_files)
+                except Exception:
+                    stacktrace_files_list = None
             
             # Create error dict manually to avoid validation issues
             error_dict = {
@@ -113,6 +144,9 @@ async def get_all_errors(db: AsyncSession = Depends(get_db)):
                 "event_platform": error.event_platform,
                 "event_logger": error.event_logger,
                 "event_level": error.event_level,
+                "breadcrumbs": breadcrumbs_dict,
+                "stacktrace_files": stacktrace_files_list,
+                "stacktrace_detailed": error.stacktrace_detailed,
                 "full_payload": full_payload_dict,
             }
             

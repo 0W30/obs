@@ -40,6 +40,13 @@ class Error(Base):
     event_logger = Column(String, nullable=True)
     event_level = Column(String, nullable=True)
     
+    # Breadcrumbs - хлебные крошки (события перед ошибкой)
+    breadcrumbs = Column(Text, nullable=True)  # JSON array of breadcrumbs
+    
+    # Детальная информация о файлах в стектрейсе
+    stacktrace_files = Column(Text, nullable=True)  # JSON array with detailed file info (filename, path, lines, context)
+    stacktrace_detailed = Column(Text, nullable=True)  # Расширенный стектрейс с контекстом кода
+    
     # Full payload as JSON for complete trace
     full_payload = Column(Text, nullable=True)  # Store complete webhook payload as JSON
 

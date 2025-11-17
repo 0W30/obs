@@ -2,7 +2,7 @@
 Pydantic schemas for request/response validation.
 """
 from datetime import datetime
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Union
 from pydantic import BaseModel, Field
 
 
@@ -126,6 +126,13 @@ class ErrorResponse(BaseModel):
     event_platform: Optional[str] = None
     event_logger: Optional[str] = None
     event_level: Optional[str] = None
+    
+    # Breadcrumbs - хлебные крошки (события перед ошибкой)
+    breadcrumbs: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None  # JSON parsed breadcrumbs
+    
+    # Детальная информация о файлах в стектрейсе
+    stacktrace_files: Optional[List[Dict[str, Any]]] = None  # JSON parsed file info
+    stacktrace_detailed: Optional[str] = None  # Расширенный стектрейс с контекстом кода
     
     # Full payload
     full_payload: Optional[Dict[str, Any]] = None

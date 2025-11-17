@@ -413,6 +413,8 @@ async def sentry_webhook(
                     exception_value = exc.value
         
         # Extract stacktrace (handle both Pydantic models and raw dicts)
+        stacktrace_files = None
+        stacktrace_detailed = None
         if event:
             stacktrace_frames = None
             
@@ -431,13 +433,81 @@ async def sentry_webhook(
             
             if stacktrace_frames:
                 stacktrace_lines = []
+                files_info = []
+                detailed_lines = []
+                
                 for frame in reversed(stacktrace_frames):  # Reverse to show call order
                     if isinstance(frame, dict):
-                        frame_str = f"  File \"{frame.get('filename', 'unknown')}\", line {frame.get('lineno', '?')}, in {frame.get('function', 'unknown')}"
+                        filename = frame.get('filename', 'unknown')
+                        abs_path = frame.get('abs_path') or filename
+                        lineno = frame.get('lineno', '?')
+                        function = frame.get('function', 'unknown')
+                        context_line = frame.get('context_line')
+                        pre_context = frame.get('pre_context', [])
+                        post_context = frame.get('post_context', [])
+                        vars_dict = frame.get('vars', {})
                     else:
-                        frame_str = f"  File \"{frame.filename or 'unknown'}\", line {frame.lineno or '?'}, in {frame.function or 'unknown'}"
+                        filename = frame.filename or 'unknown'
+                        abs_path = getattr(frame, 'abs_path', None) or filename
+                        lineno = frame.lineno or '?'
+                        function = frame.function or 'unknown'
+                        context_line = getattr(frame, 'context_line', None)
+                        pre_context = getattr(frame, 'pre_context', []) or []
+                        post_context = getattr(frame, 'post_context', []) or []
+                        vars_dict = getattr(frame, 'vars', {}) or {}
+                    
+                    # Simple stacktrace line
+                    frame_str = f"  File \"{filename}\", line {lineno}, in {function}"
                     stacktrace_lines.append(frame_str)
+                    
+                    # Detailed file information
+                    file_info = {
+                        "filename": filename,
+                        "abs_path": abs_path,
+                        "line": lineno,
+                        "function": function,
+                        "context_line": context_line,
+                        "pre_context": pre_context,
+                        "post_context": post_context,
+                        "vars": vars_dict
+                    }
+                    files_info.append(file_info)
+                    
+                    # Detailed stacktrace with context
+                    detailed_frame = f"File \"{abs_path}\", line {lineno}, in {function}\n"
+                    if pre_context:
+                        for pre_line in pre_context:
+                            detailed_frame += f"  {pre_line}\n"
+                    if context_line:
+                        detailed_frame += f"> {context_line}\n"
+                    if post_context:
+                        for post_line in post_context:
+                            detailed_frame += f"  {post_line}\n"
+                    if vars_dict:
+                        detailed_frame += f"  Variables: {json.dumps(vars_dict, indent=2, default=str)}\n"
+                    detailed_lines.append(detailed_frame)
+                
                 stacktrace = "\n".join(stacktrace_lines)
+                stacktrace_files = json.dumps(files_info, indent=2, default=str)
+                stacktrace_detailed = "\n".join(detailed_lines)
+        
+        # Extract breadcrumbs (handle both Pydantic models and raw dicts)
+        breadcrumbs = None
+        if event:
+            if isinstance(event, dict):
+                event_breadcrumbs = event.get("breadcrumbs")
+                if event_breadcrumbs:
+                    if isinstance(event_breadcrumbs, list):
+                        breadcrumbs = json.dumps(event_breadcrumbs, indent=2, default=str)
+                    elif isinstance(event_breadcrumbs, dict) and "values" in event_breadcrumbs:
+                        breadcrumbs = json.dumps(event_breadcrumbs.get("values", []), indent=2, default=str)
+            else:
+                # Try to get breadcrumbs from Pydantic model
+                if hasattr(event, 'breadcrumbs') and event.breadcrumbs:
+                    if isinstance(event.breadcrumbs, list):
+                        breadcrumbs = json.dumps([b.model_dump() if hasattr(b, 'model_dump') else b for b in event.breadcrumbs], indent=2, default=str)
+                    elif isinstance(event.breadcrumbs, dict) and "values" in event.breadcrumbs:
+                        breadcrumbs = json.dumps(event.breadcrumbs.get("values", []), indent=2, default=str)
         
         # Extract additional issue fields
         issue_id = None
@@ -511,6 +581,10 @@ async def sentry_webhook(
             event_platform=event_platform,
             event_logger=event_logger,
             event_level=event_level,
+            # Breadcrumbs and detailed stacktrace
+            breadcrumbs=breadcrumbs,
+            stacktrace_files=stacktrace_files,
+            stacktrace_detailed=stacktrace_detailed,
             # Full payload
             full_payload=full_payload_json
         )
