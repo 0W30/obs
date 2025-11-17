@@ -391,105 +391,132 @@ async def sentry_webhook(
                 except (ValueError, TypeError):
                     pass
         
-        # Extract exception information (handle both Pydantic models and raw dicts)
+        # Extract exception information and stacktrace (handle both Pydantic models and raw dicts)
         exception_type = None
         exception_value = None
         stacktrace = None
+        stacktrace_files = None
+        stacktrace_detailed = None
+        stacktrace_frames = None
         
         if event:
             exceptions_list = None
             if isinstance(event, dict):
                 exceptions_list = event.get("exceptions")
-            elif event.exceptions:
+                logger.info(f"Event dict keys: {list(event.keys()) if isinstance(event, dict) else 'N/A'}")
+                if exceptions_list:
+                    logger.info(f"Found {len(exceptions_list)} exceptions in event")
+            elif hasattr(event, 'exceptions') and event.exceptions:
                 exceptions_list = event.exceptions
+                logger.info(f"Found {len(exceptions_list)} exceptions in event (Pydantic)")
             
             if exceptions_list and len(exceptions_list) > 0:
                 exc = exceptions_list[0]
                 if isinstance(exc, dict):
                     exception_type = exc.get("type")
                     exception_value = exc.get("value")
+                    logger.info(f"Exception type: {exception_type}, value: {exception_value}")
+                    # Stacktrace is usually inside exception, not in event
+                    exc_stacktrace = exc.get("stacktrace")
+                    logger.info(f"Exception stacktrace type: {type(exc_stacktrace)}, keys: {list(exc_stacktrace.keys()) if isinstance(exc_stacktrace, dict) else 'N/A'}")
+                    if exc_stacktrace:
+                        if isinstance(exc_stacktrace, dict):
+                            stacktrace_frames = exc_stacktrace.get("frames")
+                            logger.info(f"Found {len(stacktrace_frames) if stacktrace_frames else 0} frames in exception stacktrace")
+                        else:
+                            stacktrace_frames = None
+                    else:
+                        stacktrace_frames = None
+                        logger.warning("No stacktrace found in exception")
                 else:
                     exception_type = exc.type
                     exception_value = exc.value
-        
-        # Extract stacktrace (handle both Pydantic models and raw dicts)
-        stacktrace_files = None
-        stacktrace_detailed = None
-        if event:
-            stacktrace_frames = None
-            
-            if isinstance(event, dict):
-                # Try to get stacktrace from event dict
-                event_stacktrace = event.get("stacktrace")
-                if event_stacktrace:
-                    if isinstance(event_stacktrace, dict):
-                        stacktrace_frames = event_stacktrace.get("frames")
-                    elif hasattr(event_stacktrace, "frames"):
-                        stacktrace_frames = event_stacktrace.frames
-            else:
-                # Try to get stacktrace from Pydantic model
-                if event.stacktrace and event.stacktrace.frames:
-                    stacktrace_frames = event.stacktrace.frames
-            
-            if stacktrace_frames:
-                stacktrace_lines = []
-                files_info = []
-                detailed_lines = []
-                
-                for frame in reversed(stacktrace_frames):  # Reverse to show call order
-                    if isinstance(frame, dict):
-                        filename = frame.get('filename', 'unknown')
-                        abs_path = frame.get('abs_path') or filename
-                        lineno = frame.get('lineno', '?')
-                        function = frame.get('function', 'unknown')
-                        context_line = frame.get('context_line')
-                        pre_context = frame.get('pre_context', [])
-                        post_context = frame.get('post_context', [])
-                        vars_dict = frame.get('vars', {})
+                    # Try to get stacktrace from exception
+                    if hasattr(exc, 'stacktrace') and exc.stacktrace:
+                        if hasattr(exc.stacktrace, 'frames'):
+                            stacktrace_frames = exc.stacktrace.frames
+                        else:
+                            stacktrace_frames = None
                     else:
-                        filename = frame.filename or 'unknown'
-                        abs_path = getattr(frame, 'abs_path', None) or filename
-                        lineno = frame.lineno or '?'
-                        function = frame.function or 'unknown'
-                        context_line = getattr(frame, 'context_line', None)
-                        pre_context = getattr(frame, 'pre_context', []) or []
-                        post_context = getattr(frame, 'post_context', []) or []
-                        vars_dict = getattr(frame, 'vars', {}) or {}
-                    
-                    # Simple stacktrace line
-                    frame_str = f"  File \"{filename}\", line {lineno}, in {function}"
-                    stacktrace_lines.append(frame_str)
-                    
-                    # Detailed file information
-                    file_info = {
-                        "filename": filename,
-                        "abs_path": abs_path,
-                        "line": lineno,
-                        "function": function,
-                        "context_line": context_line,
-                        "pre_context": pre_context,
-                        "post_context": post_context,
-                        "vars": vars_dict
-                    }
-                    files_info.append(file_info)
-                    
-                    # Detailed stacktrace with context
-                    detailed_frame = f"File \"{abs_path}\", line {lineno}, in {function}\n"
-                    if pre_context:
-                        for pre_line in pre_context:
-                            detailed_frame += f"  {pre_line}\n"
-                    if context_line:
-                        detailed_frame += f"> {context_line}\n"
-                    if post_context:
-                        for post_line in post_context:
-                            detailed_frame += f"  {post_line}\n"
-                    if vars_dict:
-                        detailed_frame += f"  Variables: {json.dumps(vars_dict, indent=2, default=str)}\n"
-                    detailed_lines.append(detailed_frame)
+                        stacktrace_frames = None
+            
+            # If stacktrace not found in exceptions, try event level
+            if not stacktrace_frames:
+                if isinstance(event, dict):
+                    # Try to get stacktrace from event dict
+                    event_stacktrace = event.get("stacktrace")
+                    if event_stacktrace:
+                        if isinstance(event_stacktrace, dict):
+                            stacktrace_frames = event_stacktrace.get("frames")
+                        elif hasattr(event_stacktrace, "frames"):
+                            stacktrace_frames = event_stacktrace.frames
+                else:
+                    # Try to get stacktrace from Pydantic model
+                    if hasattr(event, 'stacktrace') and event.stacktrace:
+                        if hasattr(event.stacktrace, 'frames'):
+                            stacktrace_frames = event.stacktrace.frames
+        
+        # Process stacktrace frames if found
+        if stacktrace_frames:
+            stacktrace_lines = []
+            files_info = []
+            detailed_lines = []
+            
+            for frame in reversed(stacktrace_frames):  # Reverse to show call order
+                if isinstance(frame, dict):
+                    filename = frame.get('filename', 'unknown')
+                    abs_path = frame.get('abs_path') or filename
+                    lineno = frame.get('lineno', '?')
+                    function = frame.get('function', 'unknown')
+                    context_line = frame.get('context_line')
+                    pre_context = frame.get('pre_context', [])
+                    post_context = frame.get('post_context', [])
+                    vars_dict = frame.get('vars', {})
+                else:
+                    filename = frame.filename or 'unknown'
+                    abs_path = getattr(frame, 'abs_path', None) or filename
+                    lineno = frame.lineno or '?'
+                    function = frame.function or 'unknown'
+                    context_line = getattr(frame, 'context_line', None)
+                    pre_context = getattr(frame, 'pre_context', []) or []
+                    post_context = getattr(frame, 'post_context', []) or []
+                    vars_dict = getattr(frame, 'vars', {}) or {}
                 
-                stacktrace = "\n".join(stacktrace_lines)
-                stacktrace_files = json.dumps(files_info, indent=2, default=str)
-                stacktrace_detailed = "\n".join(detailed_lines)
+                # Simple stacktrace line
+                frame_str = f"  File \"{filename}\", line {lineno}, in {function}"
+                stacktrace_lines.append(frame_str)
+                
+                # Detailed file information
+                file_info = {
+                    "filename": filename,
+                    "abs_path": abs_path,
+                    "line": lineno,
+                    "function": function,
+                    "context_line": context_line,
+                    "pre_context": pre_context,
+                    "post_context": post_context,
+                    "vars": vars_dict
+                }
+                files_info.append(file_info)
+                
+                # Detailed stacktrace with context
+                detailed_frame = f"File \"{abs_path}\", line {lineno}, in {function}\n"
+                if pre_context:
+                    for pre_line in pre_context:
+                        detailed_frame += f"  {pre_line}\n"
+                if context_line:
+                    detailed_frame += f"> {context_line}\n"
+                if post_context:
+                    for post_line in post_context:
+                        detailed_frame += f"  {post_line}\n"
+                if vars_dict:
+                    detailed_frame += f"  Variables: {json.dumps(vars_dict, indent=2, default=str)}\n"
+                detailed_lines.append(detailed_frame)
+            
+            stacktrace = "\n".join(stacktrace_lines)
+            stacktrace_files = json.dumps(files_info, indent=2, default=str)
+            stacktrace_detailed = "\n".join(detailed_lines)
+            logger.info(f"Extracted stacktrace with {len(stacktrace_lines)} frames, {len(files_info)} files")
         
         # Extract breadcrumbs (handle both Pydantic models and raw dicts)
         breadcrumbs = None
@@ -497,17 +524,28 @@ async def sentry_webhook(
             if isinstance(event, dict):
                 event_breadcrumbs = event.get("breadcrumbs")
                 if event_breadcrumbs:
+                    logger.info(f"Breadcrumbs in event dict: {type(event_breadcrumbs)}, keys: {list(event_breadcrumbs.keys()) if isinstance(event_breadcrumbs, dict) else 'N/A'}")
                     if isinstance(event_breadcrumbs, list):
                         breadcrumbs = json.dumps(event_breadcrumbs, indent=2, default=str)
+                        logger.info(f"Saved {len(event_breadcrumbs)} breadcrumbs (list)")
                     elif isinstance(event_breadcrumbs, dict) and "values" in event_breadcrumbs:
                         breadcrumbs = json.dumps(event_breadcrumbs.get("values", []), indent=2, default=str)
+                        logger.info(f"Saved {len(event_breadcrumbs.get('values', []))} breadcrumbs (dict with values)")
+                    else:
+                        logger.warning(f"Breadcrumbs format not recognized: {type(event_breadcrumbs)}")
+                else:
+                    logger.info("No breadcrumbs found in event")
             else:
                 # Try to get breadcrumbs from Pydantic model
                 if hasattr(event, 'breadcrumbs') and event.breadcrumbs:
                     if isinstance(event.breadcrumbs, list):
                         breadcrumbs = json.dumps([b.model_dump() if hasattr(b, 'model_dump') else b for b in event.breadcrumbs], indent=2, default=str)
+                        logger.info(f"Saved {len(event.breadcrumbs)} breadcrumbs (Pydantic list)")
                     elif isinstance(event.breadcrumbs, dict) and "values" in event.breadcrumbs:
                         breadcrumbs = json.dumps(event.breadcrumbs.get("values", []), indent=2, default=str)
+                        logger.info(f"Saved {len(event.breadcrumbs.get('values', []))} breadcrumbs (Pydantic dict)")
+                else:
+                    logger.info("No breadcrumbs found in event (Pydantic)")
         
         # Extract additional issue fields
         issue_id = None
@@ -594,6 +632,9 @@ async def sentry_webhook(
         await db.refresh(new_error)
         
         logger.info(f"Successfully saved error with event_id {event_id}")
+        logger.info(f"  - Stacktrace: {'Yes' if stacktrace else 'No'}")
+        logger.info(f"  - Stacktrace files: {'Yes' if stacktrace_files else 'No'}")
+        logger.info(f"  - Breadcrumbs: {'Yes' if breadcrumbs else 'No'}")
         
         return {
             "message": "Error saved successfully",
