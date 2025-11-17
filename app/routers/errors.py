@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc
 from app.database import get_db
 from app.models import Error
-from app.schemas import ErrorResponse, ErrorNotFoundResponse
+from app.schemas import ErrorResponse, ErrorNotFoundResponse, StackTraceResponse
 
 router = APIRouter(prefix="/errors", tags=["errors"])
 
@@ -152,6 +152,43 @@ async def get_all_errors(db: AsyncSession = Depends(get_db)):
             
             result.append(ErrorResponse.model_validate(error_dict))
         return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
+@router.get("/latest/stacktrace", response_model=StackTraceResponse)
+async def get_latest_stacktrace(db: AsyncSession = Depends(get_db)):
+    """
+    Get simplified stacktrace information from the latest error.
+    Returns only essential fields: stacktrace (required), message, exception_type, exception_value.
+    """
+    try:
+        result = await db.execute(
+            select(Error).order_by(desc(Error.created_at)).limit(1)
+        )
+        error = result.scalar_one_or_none()
+        
+        if error is None:
+            raise HTTPException(
+                status_code=404,
+                detail="No errors found"
+            )
+        
+        # Use detailed stacktrace if available, otherwise use simple stacktrace
+        stacktrace = error.stacktrace_detailed or error.stacktrace or ""
+        
+        if not stacktrace:
+            # If no stacktrace at all, return empty string (required field)
+            stacktrace = ""
+        
+        return StackTraceResponse(
+            stacktrace=stacktrace,
+            message=error.message,
+            exception_type=error.exception_type,
+            exception_value=error.exception_value
+        )
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 

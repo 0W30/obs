@@ -145,3 +145,13 @@ class ErrorNotFoundResponse(BaseModel):
     """Schema for not found error response."""
     error: str = "not_found"
 
+
+class StackTraceResponse(BaseModel):
+    """
+    Simplified schema for stacktrace response with essential error information.
+    """
+    stacktrace: str = Field(..., description="Stack trace (required)")
+    message: Optional[str] = Field(None, description="Error message")
+    exception_type: Optional[str] = Field(None, description="Exception type")
+    exception_value: Optional[str] = Field(None, description="Exception value")
+
