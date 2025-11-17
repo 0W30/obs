@@ -10,8 +10,13 @@ services:
       - ./data:/data
     environment:
       - DATABASE_URL=sqlite+aiosqlite:////data/errors.db
-      # Sentry configuration
+      # Sentry/GlitchTip configuration
       - SENTRY_DSN=${SENTRY_DSN:-}
+      - SENTRY_PROJECT=${SENTRY_PROJECT:-}
+      - SENTRY_FILTER_BY_PROJECT=${SENTRY_FILTER_BY_PROJECT:-false}
+      # GlitchTip API configuration (optional, for fetching detailed issue info)
+      - GLITCHTIP_API_TOKEN=${GLITCHTIP_API_TOKEN:-}
+      - GLITCHTIP_BASE_URL=${GLITCHTIP_BASE_URL:-}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]

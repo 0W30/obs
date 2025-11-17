@@ -3,4 +3,5 @@ uvicorn[standard]
 aiosqlite
 pydantic
 sqlalchemy
+httpx
 

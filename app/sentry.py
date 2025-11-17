@@ -19,6 +19,8 @@ import logging
 import re
 import hashlib
 from datetime import datetime
+from typing import Optional, Dict, Any
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -30,6 +32,84 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/sentry", tags=["sentry"])
+
+
+async def _fetch_glitchtip_issue_details(issue_id: str, base_url: str, api_token: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """
+    Fetch detailed issue information from GlitchTip API.
+    
+    Returns None if API is not configured or request fails.
+    """
+    if not api_token:
+        logger.info("GlitchTip API token not configured, skipping detailed fetch")
+        return None
+    
+    try:
+        # Extract base URL from issue permalink if not provided
+        if not base_url and issue_id:
+            # We'll need to extract it from the webhook URL
+            pass
+        
+        if not base_url:
+            logger.warning("GlitchTip base URL not configured")
+            return None
+        
+        # Remove trailing slash
+        base_url = base_url.rstrip('/')
+        
+        # GlitchTip API endpoint for issue details
+        url = f"{base_url}/api/0/issues/{issue_id}/"
+        
+        headers = {
+            "Authorization": f"Bearer {api_token}",
+            "Content-Type": "application/json"
+        }
+        
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(url, headers=headers)
+            if response.status_code == 200:
+                issue_data = response.json()
+                logger.info(f"Successfully fetched GlitchTip issue {issue_id} details")
+                return issue_data
+            else:
+                logger.warning(f"Failed to fetch GlitchTip issue {issue_id}: {response.status_code}")
+                return None
+    except Exception as e:
+        logger.warning(f"Error fetching GlitchTip issue details: {str(e)}")
+        return None
+
+
+async def _fetch_glitchtip_latest_event(issue_id: str, base_url: str, api_token: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """
+    Fetch latest event for an issue from GlitchTip API.
+    This contains stacktrace, breadcrumbs, etc.
+    """
+    if not api_token:
+        return None
+    
+    try:
+        base_url = base_url.rstrip('/')
+        
+        # Get latest event for the issue
+        url = f"{base_url}/api/0/issues/{issue_id}/events/latest/"
+        
+        headers = {
+            "Authorization": f"Bearer {api_token}",
+            "Content-Type": "application/json"
+        }
+        
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(url, headers=headers)
+            if response.status_code == 200:
+                event_data = response.json()
+                logger.info(f"Successfully fetched GlitchTip latest event for issue {issue_id}")
+                return event_data
+            else:
+                logger.warning(f"Failed to fetch GlitchTip latest event for issue {issue_id}: {response.status_code}")
+                return None
+    except Exception as e:
+        logger.warning(f"Error fetching GlitchTip latest event: {str(e)}")
+        return None
 
 
 async def _process_glitchtip_webhook(payload_dict: dict, db: AsyncSession):
@@ -138,6 +218,94 @@ async def _process_glitchtip_webhook(payload_dict: dict, db: AsyncSession):
             logger.warning(f"Error with event_id {event_id} already exists")
             return
         
+        # Try to fetch detailed information from GlitchTip API if configured
+        stacktrace = None
+        stacktrace_files = None
+        stacktrace_detailed = None
+        breadcrumbs = None
+        additional_event_data = {}
+        
+        if issue_id and settings.GLITCHTIP_API_TOKEN:
+            # Extract base URL from issue_permalink if GLITCHTIP_BASE_URL not set
+            base_url = settings.GLITCHTIP_BASE_URL
+            if not base_url and issue_permalink:
+                # Extract base URL from permalink (e.g., http://glitchtip.example.com/uvi/issues/3)
+                match = re.search(r'(https?://[^/]+)', issue_permalink)
+                if match:
+                    base_url = match.group(1)
+                    logger.info(f"Extracted GlitchTip base URL from permalink: {base_url}")
+            
+            if base_url:
+                # Fetch latest event which contains stacktrace and breadcrumbs
+                event_data = await _fetch_glitchtip_latest_event(issue_id, base_url, settings.GLITCHTIP_API_TOKEN)
+                if event_data:
+                    additional_event_data = event_data
+                    # Extract stacktrace from event
+                    if "entries" in event_data:
+                        for entry in event_data.get("entries", []):
+                            if entry.get("type") == "exception" and "data" in entry:
+                                exc_data = entry["data"]
+                                if "values" in exc_data and len(exc_data["values"]) > 0:
+                                    exc = exc_data["values"][0]
+                                    if "stacktrace" in exc:
+                                        stacktrace_info = exc["stacktrace"]
+                                        if "frames" in stacktrace_info:
+                                            stacktrace_frames = stacktrace_info["frames"]
+                                            # Process frames similar to standard Sentry webhook
+                                            stacktrace_lines = []
+                                            files_info = []
+                                            detailed_lines = []
+                                            
+                                            for frame in reversed(stacktrace_frames):
+                                                filename = frame.get('filename', 'unknown')
+                                                abs_path = frame.get('abs_path') or filename
+                                                lineno = frame.get('lineno', '?')
+                                                function = frame.get('function', 'unknown')
+                                                context_line = frame.get('context_line')
+                                                pre_context = frame.get('pre_context', [])
+                                                post_context = frame.get('post_context', [])
+                                                vars_dict = frame.get('vars', {})
+                                                
+                                                frame_str = f"  File \"{filename}\", line {lineno}, in {function}"
+                                                stacktrace_lines.append(frame_str)
+                                                
+                                                file_info = {
+                                                    "filename": filename,
+                                                    "abs_path": abs_path,
+                                                    "line": lineno,
+                                                    "function": function,
+                                                    "context_line": context_line,
+                                                    "pre_context": pre_context,
+                                                    "post_context": post_context,
+                                                    "vars": vars_dict
+                                                }
+                                                files_info.append(file_info)
+                                                
+                                                detailed_frame = f"File \"{abs_path}\", line {lineno}, in {function}\n"
+                                                if pre_context:
+                                                    for pre_line in pre_context:
+                                                        detailed_frame += f"  {pre_line}\n"
+                                                if context_line:
+                                                    detailed_frame += f"> {context_line}\n"
+                                                if post_context:
+                                                    for post_line in post_context:
+                                                        detailed_frame += f"  {post_line}\n"
+                                                if vars_dict:
+                                                    detailed_frame += f"  Variables: {json.dumps(vars_dict, indent=2, default=str)}\n"
+                                                detailed_lines.append(detailed_frame)
+                                            
+                                            stacktrace = "\n".join(stacktrace_lines)
+                                            stacktrace_files = json.dumps(files_info, indent=2, default=str)
+                                            stacktrace_detailed = "\n".join(detailed_lines)
+                                            logger.info(f"Extracted stacktrace from GlitchTip API: {len(stacktrace_lines)} frames")
+                            
+                            # Extract breadcrumbs
+                            if entry.get("type") == "breadcrumbs" and "data" in entry:
+                                breadcrumbs_data = entry["data"]
+                                if "values" in breadcrumbs_data:
+                                    breadcrumbs = json.dumps(breadcrumbs_data["values"], indent=2, default=str)
+                                    logger.info(f"Extracted {len(breadcrumbs_data['values'])} breadcrumbs from GlitchTip API")
+        
         # Create new error record
         new_error = Error(
             event_id=event_id,
@@ -147,7 +315,7 @@ async def _process_glitchtip_webhook(payload_dict: dict, db: AsyncSession):
             message=message,
             exception_type=exception_type,
             exception_value=exception_value,
-            stacktrace=None,  # Not available in GlitchTip format
+            stacktrace=stacktrace,
             timestamp=datetime.now(),
             # Issue fields
             issue_id=issue_id,
@@ -162,8 +330,12 @@ async def _process_glitchtip_webhook(payload_dict: dict, db: AsyncSession):
             event_platform=None,
             event_logger=None,
             event_level=None,
-            # Full payload
-            full_payload=json.dumps(payload_dict, indent=2, default=str)
+            # Breadcrumbs and detailed stacktrace (from API if available)
+            breadcrumbs=breadcrumbs,
+            stacktrace_files=stacktrace_files,
+            stacktrace_detailed=stacktrace_detailed,
+            # Full payload (include API data if fetched)
+            full_payload=json.dumps({**payload_dict, "api_event_data": additional_event_data} if additional_event_data else payload_dict, indent=2, default=str)
         )
         
         db.add(new_error)
