@@ -139,7 +139,7 @@ async def _process_glitchtip_webhook(payload_dict: dict, db: AsyncSession):
         attachments = payload_dict.get("attachments", [])
         if not attachments:
             logger.warning("GlitchTip webhook has no attachments")
-            return
+            return  # Early return is OK, caller handles it
         
         attachment = attachments[0]  # Use first attachment
         
@@ -171,7 +171,7 @@ async def _process_glitchtip_webhook(payload_dict: dict, db: AsyncSession):
                     f"Rejected GlitchTip webhook from project '{project_name}'. "
                     f"Expected project: '{settings.SENTRY_PROJECT}'"
                 )
-                return
+                return  # Early return is OK, caller handles it
         
         # Extract issue information from title_link or sections
         issue_permalink = attachment.get("title_link")
@@ -405,8 +405,20 @@ async def sentry_webhook(
         if is_glitchtip_format:
             logger.info("Detected GlitchTip Slack/Microsoft Teams webhook format")
             # Process GlitchTip format webhook
-            await _process_glitchtip_webhook(payload_dict, db)
-            return {"message": "GlitchTip webhook processed successfully"}
+            try:
+                await _process_glitchtip_webhook(payload_dict, db)
+                # Function returns None on early exit (already exists, filtered, etc.)
+                # That's OK, we still return success
+                return {"message": "GlitchTip webhook processed successfully", "status": "ok"}
+            except HTTPException:
+                # Re-raise HTTP exceptions
+                raise
+            except Exception as e:
+                logger.error(f"Error processing GlitchTip webhook: {str(e)}", exc_info=True)
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Failed to process GlitchTip webhook: {str(e)}"
+                )
         
         # Validate payload with Pydantic (try flexible validation)
         try:
