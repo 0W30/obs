@@ -17,6 +17,10 @@ services:
       # GlitchTip API configuration (optional, for fetching detailed issue info)
       - GLITCHTIP_API_TOKEN=${GLITCHTIP_API_TOKEN:-}
       - GLITCHTIP_BASE_URL=${GLITCHTIP_BASE_URL:-}
+      # External resolve service configuration (optional, for sending resolved errors)
+      - RESOLVE_SERVICE_URL=${RESOLVE_SERVICE_URL:-}
+      - RESOLVE_SERVICE_ENABLED=${RESOLVE_SERVICE_ENABLED:-true}
+      - TRACKER_QUEUE=${TRACKER_QUEUE:-TEST}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]

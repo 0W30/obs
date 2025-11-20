@@ -20,6 +20,11 @@ class Settings:
     GLITCHTIP_API_TOKEN: Optional[str] = os.getenv("GLITCHTIP_API_TOKEN", None)
     GLITCHTIP_BASE_URL: Optional[str] = os.getenv("GLITCHTIP_BASE_URL", None)  # e.g., http://glitchtip.example.com
     
+    # External service configuration (for sending resolved errors)
+    RESOLVE_SERVICE_URL: Optional[str] = os.getenv("RESOLVE_SERVICE_URL", None)  # e.g., http://resolve-service:8000
+    RESOLVE_SERVICE_ENABLED: bool = os.getenv("RESOLVE_SERVICE_ENABLED", "false").lower() == "true"
+    TRACKER_QUEUE: str = os.getenv("TRACKER_QUEUE", "TEST")  # Queue name for tracker
+    
     # API
     API_HOST: str = os.getenv("API_HOST", "0.0.0.0")
     API_PORT: int = int(os.getenv("API_PORT", "8000"))
