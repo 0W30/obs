@@ -273,17 +273,17 @@ async def _process_glitchtip_webhook(payload_dict: dict, db: AsyncSession):
                 exception_type = parts[0].strip()
                 exception_value = parts[1].strip()
         
-        # Generate event_id
+        # Generate unique event_id with timestamp to handle re-occurrences
+        # Each webhook call creates a new event, even for the same issue
+        # This allows tracking error re-occurrences even after resolution
+        timestamp_str = datetime.now().strftime("%Y%m%d%H%M%S%f")[:-3]  # milliseconds precision
         if issue_id:
-            event_id = f"glitchtip-{issue_id}"
+            event_id = f"glitchtip-{issue_id}-{timestamp_str}"
         else:
-            event_id = f"glitchtip-{hashlib.md5(message.encode()).hexdigest()[:8]}"
+            message_hash = hashlib.md5(message.encode()).hexdigest()[:8]
+            event_id = f"glitchtip-{message_hash}-{timestamp_str}"
         
-        # Check if error already exists
-        result = await db.execute(select(Error).where(Error.event_id == event_id))
-        if result.scalar_one_or_none():
-            logger.warning(f"Error with event_id {event_id} already exists")
-            return
+        # Note: We don't check for duplicates anymore - each webhook call is a new event
         
         # Try to fetch detailed information from GlitchTip API
         stacktrace = None
@@ -561,15 +561,24 @@ async def sentry_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                 logger.warning(f"Rejected webhook from project '{project_name}'")
                 return {"message": f"Webhook from project '{project_name}' ignored", "expected_project": settings.SENTRY_PROJECT}
         
-        # Get event_id
-        event_id = _get_value(event, 'event_id', 'id') or _get_value(issue, 'id', 'event_id', default='unknown')
+        # Get event_id from event (should be unique per event in Sentry)
+        # If event_id is same as issue_id, it might be re-occurrence - add timestamp
+        event_id = _get_value(event, 'event_id', 'id')
+        if not event_id or event_id == _get_value(issue, 'id'):
+            # Fallback: use issue_id with timestamp to handle re-occurrences
+            issue_id_value = _get_value(issue, 'id', 'event_id', default='unknown')
+            if issue_id_value != 'unknown':
+                timestamp_str = datetime.now().strftime("%Y%m%d%H%M%S%f")[:-3]
+                event_id = f"sentry-{issue_id_value}-{timestamp_str}"
+            else:
+                event_id = f"unknown-{datetime.now().strftime('%Y%m%d%H%M%S%f')[:-3]}"
         
         logger.info(f"Received webhook: action={payload.action}, project={project_name}, event_id={event_id}")
         
-        # Check if error already exists
+        # Check if error already exists (prevent duplicate events within same second)
         result = await db.execute(select(Error).where(Error.event_id == event_id))
         if result.scalar_one_or_none():
-            logger.warning(f"Error with event_id {event_id} already exists")
+            logger.info(f"Error with event_id {event_id} already exists - skipping duplicate")
             return {"message": "Error already exists", "event_id": event_id}
         
         # Extract message
