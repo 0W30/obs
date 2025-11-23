@@ -192,12 +192,21 @@ async def _send_to_resolve_service(error: Error) -> bool:
     
     try:
         # Prepare payload according to resolve service contract
-        stacktrace = error.stacktrace_detailed or error.stacktrace or ""
+        # Use stacktrace_detailed if available and not empty, otherwise use stacktrace
+        stacktrace = ""
+        if error.stacktrace_detailed and error.stacktrace_detailed.strip():
+            stacktrace = error.stacktrace_detailed
+        elif error.stacktrace and error.stacktrace.strip():
+            stacktrace = error.stacktrace
         
         # Resolve service requires non-empty stacktrace
         # If stacktrace is empty, skip sending to avoid 400 error
         if not stacktrace or not stacktrace.strip():
-            logger.warning(f"Skipping resolve service: empty stacktrace for event_id={error.event_id}")
+            logger.warning(
+                f"Skipping resolve service: empty stacktrace for event_id={error.event_id}, "
+                f"stacktrace_detailed={'present' if error.stacktrace_detailed else 'None'}, "
+                f"stacktrace={'present' if error.stacktrace else 'None'}"
+            )
             return False
         
         # Extract project name - use from error, fallback to "unknown"
@@ -218,13 +227,35 @@ async def _send_to_resolve_service(error: Error) -> bool:
         url = f"{settings.RESOLVE_SERVICE_URL.rstrip('/')}/resolve"
         headers = {"Content-Type": "application/json"}
         
+        logger.info(
+            f"Sending to resolve service: URL={url}, event_id={error.event_id}, "
+            f"has_stacktrace={bool(stacktrace)}, stacktrace_length={len(stacktrace) if stacktrace else 0}"
+        )
+        logger.debug(f"Payload preview: {json.dumps({**payload, 'stacktrace': payload['stacktrace'][:200] + '...' if len(payload['stacktrace']) > 200 else payload['stacktrace']}, indent=2)}")
+        
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.post(url, json=payload, headers=headers)
             if response.status_code in (200, 201):
                 logger.info(f"Successfully sent error to resolve service: event_id={error.event_id}")
                 return True
             else:
-                logger.warning(f"Failed to send error to resolve service: status={response.status_code}, event_id={error.event_id}")
+                # Log response details for debugging
+                try:
+                    response_text = response.text[:500]  # First 500 chars
+                    logger.warning(
+                        f"Failed to send error to resolve service: "
+                        f"status={response.status_code}, "
+                        f"url={url}, "
+                        f"event_id={error.event_id}, "
+                        f"response={response_text}"
+                    )
+                except Exception:
+                    logger.warning(
+                        f"Failed to send error to resolve service: "
+                        f"status={response.status_code}, "
+                        f"url={url}, "
+                        f"event_id={error.event_id}"
+                    )
                 return False
     except Exception as e:
         logger.warning(f"Error sending to resolve service: {str(e)}, event_id={error.event_id}")
@@ -233,11 +264,13 @@ async def _send_to_resolve_service(error: Error) -> bool:
 
 def _extract_stacktrace_from_event(event: Any) -> Tuple[Optional[str], Optional[str], Optional[str], Optional[str], Optional[str]]:
     """
-    Extract exception and stacktrace from event.
+    Extract exception and stacktrace from event for "triggered" action.
     Works with both dict and Pydantic models.
-    Supports multiple formats:
-    - exceptions[].stacktrace.frames (standard format for "created" action)
-    - event.exception.values[].stacktrace.frames (format for "triggered" action)
+    
+    Primary format for "triggered" action:
+    - event.exception.values[].stacktrace.frames
+    
+    Fallback formats:
     - event.stacktrace.frames (event level)
     - entries[].data.values[].stacktrace.frames (alternative format)
     
@@ -253,31 +286,10 @@ def _extract_stacktrace_from_event(event: Any) -> Tuple[Optional[str], Optional[
     exception_value = None
     stacktrace_frames = None
     
-    # Try to extract from exceptions (standard format for "created" action)
-    exceptions_list = _get_value(event, 'exceptions')
-    if exceptions_list and len(exceptions_list) > 0:
-        exc = exceptions_list[0]
-        
-        # Handle both dict and Pydantic models
-        exception_type = _get_value(exc, 'type')
-        exception_value = _get_value(exc, 'value')
-        
-        # Stacktrace is usually inside exception
-        exc_stacktrace = _get_value(exc, 'stacktrace')
-        if exc_stacktrace:
-            # Handle Pydantic model - convert to dict if needed
-            if hasattr(exc_stacktrace, 'frames'):
-                stacktrace_frames = exc_stacktrace.frames
-            elif isinstance(exc_stacktrace, dict):
-                stacktrace_frames = exc_stacktrace.get('frames')
-            else:
-                stacktrace_frames = _get_value(exc_stacktrace, 'frames')
-    
-    # Try event.exception.values[] format (for "triggered" action)
+    # Primary format: event.exception.values[] (for "triggered" action)
     # This is the format Sentry uses for triggered webhooks
-    if not stacktrace_frames:
-        event_exception = _get_value(event, 'exception')
-        if event_exception:
+    event_exception = _get_value(event, 'exception')
+    if event_exception:
             # Handle both dict and Pydantic models
             if isinstance(event_exception, dict):
                 exception_values = event_exception.get('values', [])
@@ -290,10 +302,8 @@ def _extract_stacktrace_from_event(event: Any) -> Tuple[Optional[str], Optional[
                 exc = exception_values[0]
                 
                 # Extract exception info
-                if not exception_type:
-                    exception_type = _get_value(exc, 'type')
-                if not exception_value:
-                    exception_value = _get_value(exc, 'value')
+                exception_type = _get_value(exc, 'type')
+                exception_value = _get_value(exc, 'value')
                 
                 # Extract stacktrace
                 exc_stacktrace = _get_value(exc, 'stacktrace')
@@ -401,14 +411,13 @@ async def sentry_webhook(request: Request, db: AsyncSession = Depends(get_db)):
     - Вся информация о проекте, issue, event
     
     Обрабатываемые actions:
-    - "created" - новая issue создана (первое событие)
-    - "triggered" - новое событие для существующей issue (повторение ошибки)
-    - Другие actions (resolved, assigned и т.д.) игнорируются
+    - "triggered" - новое событие для существующей issue (единственный поддерживаемый action)
+    - Другие actions игнорируются
     
     Настройка в Sentry:
     - Settings → Integrations → Webhooks
     - URL: http://your-server:8002/sentry/webhook
-    - События: Issue Created, Issue Triggered (или все события)
+    - События: Issue Triggered (или Issue Alert Rules)
     
     Этот сервис НЕ подключается к Sentry - он только слушает входящие запросы.
     
@@ -436,14 +445,12 @@ async def sentry_webhook(request: Request, db: AsyncSession = Depends(get_db)):
             logger.error(f"Failed to parse JSON: {str(e)}", exc_info=True)
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid JSON: {str(e)}")
         
-        # Check action early - process "created" and "triggered" actions
-        # "created" = new issue created (first occurrence)
-        # "triggered" = new event for existing issue (re-occurrence)
-        # Other actions like "resolved", "assigned" are ignored
-        if action not in ("created", "triggered"):
-            logger.info(f"Ignoring webhook action: {action} (only 'created' and 'triggered' actions are processed)")
+        # Check action early - only process "triggered" actions
+        # This service only handles "triggered" webhooks from Sentry alerts
+        if action != "triggered":
+            logger.info(f"Ignoring webhook action: {action} (only 'triggered' actions are processed)")
             return {
-                "message": f"Action '{action}' ignored, only 'created' and 'triggered' actions are processed",
+                "message": f"Action '{action}' ignored, only 'triggered' actions are processed",
                 "status": "ignored"
             }
         
@@ -533,23 +540,46 @@ async def sentry_webhook(request: Request, db: AsyncSession = Depends(get_db)):
         
         # Extract project information
         # For "triggered" action, project might be inside event instead of data.project
+        # Also, for "triggered" action, event.project might be a number (project ID) instead of an object
         event_project = _get_value(event, 'project')
-        project_name = (
-            _get_value(project, 'name', 'slug', default='unknown') or 
-            _get_value(issue, 'project', 'name', 'slug', default='unknown') or
-            _get_value(event_project, 'name', 'slug', default='unknown') if isinstance(event_project, dict) else
-            (event_project if isinstance(event_project, str) else 'unknown')
-        ) or 'unknown'
-        project_slug = (
-            _get_value(project, 'slug') or 
-            _get_value(issue, 'project', 'slug') or
-            (_get_value(event_project, 'slug') if isinstance(event_project, dict) else None)
-        )
-        project_id = (
-            _get_value(project, 'id') or 
-            _get_value(issue, 'project', 'id') or
-            (_get_value(event_project, 'id') if isinstance(event_project, dict) else None)
-        )
+        
+        # Handle different project formats
+        if isinstance(event_project, dict):
+            # Project is an object with name/slug
+            project_name = _get_value(event_project, 'name', 'slug', default='unknown') or 'unknown'
+            project_slug = _get_value(event_project, 'slug')
+            project_id = _get_value(event_project, 'id') or str(event_project.get('id', ''))
+        elif isinstance(event_project, (int, str)):
+            # Project is just an ID (for "triggered" action)
+            project_id = str(event_project)
+            project_name = 'unknown'  # Will try to get from other sources
+            project_slug = None
+        else:
+            project_name = 'unknown'
+            project_slug = None
+            project_id = None
+        
+        # Try to get project name from other sources
+        if project_name == 'unknown':
+            project_name = (
+                _get_value(project, 'name', 'slug', default='unknown') or 
+                _get_value(issue, 'project', 'name', 'slug', default='unknown') or
+                'unknown'
+            )
+        
+        if not project_slug:
+            project_slug = (
+                _get_value(project, 'slug') or 
+                _get_value(issue, 'project', 'slug') or
+                None
+            )
+        
+        if not project_id:
+            project_id = (
+                _get_value(project, 'id') or 
+                _get_value(issue, 'project', 'id') or
+                None
+            )
         
         # Optional project filtering
         if settings.SENTRY_FILTER_BY_PROJECT and settings.SENTRY_PROJECT:
@@ -558,12 +588,17 @@ async def sentry_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                 return {"message": f"Webhook from project '{project_name}' ignored", "expected_project": settings.SENTRY_PROJECT}
         
         # Get event_id from event (should be unique per event in Sentry)
-        # If event_id is same as issue_id, it might be re-occurrence - add timestamp
+        # For "triggered" action, issue might not exist, so get issue_id from event.issue_id
         event_id = _get_value(event, 'event_id', 'id')
-        if not event_id or event_id == _get_value(issue, 'id'):
+        
+        # Extract issue_id - for "triggered" action it's in event.issue_id, not data.issue
+        issue_id_from_event = _get_value(event, 'issue_id')
+        issue_id_from_issue = _get_value(issue, 'id') if issue else None
+        issue_id_value = issue_id_from_event or issue_id_from_issue
+        
+        if not event_id or event_id == issue_id_value:
             # Fallback: use issue_id with timestamp to handle re-occurrences
-            issue_id_value = _get_value(issue, 'id', 'event_id', default='unknown')
-            if issue_id_value != 'unknown':
+            if issue_id_value:
                 timestamp_str = datetime.now().strftime("%Y%m%d%H%M%S%f")[:-3]
                 event_id = f"sentry-{issue_id_value}-{timestamp_str}"
             else:
@@ -603,14 +638,30 @@ async def sentry_webhook(request: Request, db: AsyncSession = Depends(get_db)):
         breadcrumbs = _extract_breadcrumbs_from_event(event)
         
         # Extract issue fields
-        issue_id = _get_value(issue, 'id')
-        issue_short_id = _get_value(issue, 'shortId')
-        issue_title = _get_value(issue, 'title')
-        issue_culprit = _get_value(issue, 'culprit')
-        issue_permalink = _get_value(issue, 'permalink')
-        issue_level = _get_value(issue, 'level')
-        issue_status = _get_value(issue, 'status')
-        issue_logger = _get_value(issue, 'logger')
+        # For "triggered" action, issue might not exist, so get from event
+        issue_id = issue_id_value  # Already extracted above
+        issue_short_id = _get_value(issue, 'shortId') if issue else None
+        issue_title = (
+            _get_value(issue, 'title') if issue else 
+            _get_value(event, 'title', 'message', default=None)
+        )
+        issue_culprit = (
+            _get_value(issue, 'culprit') if issue else 
+            _get_value(event, 'culprit', default=None)
+        )
+        issue_permalink = (
+            _get_value(issue, 'permalink') if issue else 
+            _get_value(event, 'web_url', 'url', default=None)
+        )
+        issue_level = (
+            _get_value(issue, 'level') if issue else 
+            _get_value(event, 'level', default=None)
+        )
+        issue_status = _get_value(issue, 'status') if issue else None
+        issue_logger = (
+            _get_value(issue, 'logger') if issue else 
+            _get_value(event, 'logger', default=None)
+        )
         
         # Extract event fields
         event_platform = _get_value(event, 'platform')
