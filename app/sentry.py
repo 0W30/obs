@@ -18,6 +18,7 @@ Sentry webhook receiver.
 """
 import json
 import logging
+import re
 import hashlib
 import hmac
 from datetime import datetime
@@ -176,6 +177,73 @@ def _extract_stacktrace_from_frames(stacktrace_frames: List[Any]) -> Tuple[str, 
     stacktrace_detailed = "\n".join(detailed_lines)
     
     return stacktrace, stacktrace_files, stacktrace_detailed
+
+
+async def _fetch_sentry_project_info(project_id: str, event_url: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """
+    Fetch project information from Sentry API using project ID.
+    Extracts organization and project slug from event URL if available.
+    
+    Returns project info dict with 'name' and 'slug' keys, or None if failed.
+    """
+    if not settings.SENTRY_API_TOKEN:
+        logger.debug("SENTRY_API_TOKEN not configured, skipping project info fetch")
+        return None
+    
+    try:
+        # Try to extract organization and project slug from event URL
+        org_slug = None
+        project_slug = None
+        
+        if event_url:
+            # Try to extract from URL like: https://sentry.io/api/0/projects/{org}/{project}/events/...
+            match = re.search(r'/projects/([^/]+)/([^/]+)/', event_url)
+            if match:
+                org_slug = match.group(1)
+                project_slug = match.group(2)
+                logger.debug(f"Extracted org={org_slug}, project_slug={project_slug} from event URL")
+        
+        # If not found in event URL, try web_url
+        if not org_slug and event_url:
+            # Try to extract from web_url like: https://sentry.io/organizations/{org}/issues/...
+            match = re.search(r'/organizations/([^/]+)/', event_url)
+            if match:
+                org_slug = match.group(1)
+        
+        # If still no org, use SENTRY_ORG from config
+        if not org_slug:
+            org_slug = settings.SENTRY_ORG
+        
+        if not org_slug:
+            logger.warning("Cannot fetch project info: organization slug not found (set SENTRY_ORG or provide event URL)")
+            return None
+        
+        # Use project_slug if available, otherwise use project_id
+        project_identifier = project_slug or project_id
+        
+        base_url = settings.SENTRY_BASE_URL.rstrip('/')
+        url = f"{base_url}/api/0/projects/{org_slug}/{project_identifier}/"
+        headers = {
+            "Authorization": f"Bearer {settings.SENTRY_API_TOKEN}",
+            "Content-Type": "application/json"
+        }
+        
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(url, headers=headers)
+            if response.status_code == 200:
+                project_data = response.json()
+                logger.info(f"Fetched Sentry project info: name={project_data.get('name')}, slug={project_data.get('slug')}")
+                return {
+                    "name": project_data.get("name"),
+                    "slug": project_data.get("slug"),
+                    "id": str(project_data.get("id", project_id))
+                }
+            else:
+                logger.warning(f"Failed to fetch Sentry project info: status={response.status_code}, project_id={project_id}")
+                return None
+    except Exception as e:
+        logger.warning(f"Error fetching Sentry project info: {str(e)}")
+        return None
 
 
 async def _send_to_resolve_service(error: Error) -> bool:
@@ -542,6 +610,7 @@ async def sentry_webhook(request: Request, db: AsyncSession = Depends(get_db)):
         # For "triggered" action, project might be inside event instead of data.project
         # Also, for "triggered" action, event.project might be a number (project ID) instead of an object
         event_project = _get_value(event, 'project')
+        event_url = _get_value(event, 'url', 'web_url')  # For extracting org/project from URL
         
         # Handle different project formats
         if isinstance(event_project, dict):
@@ -552,8 +621,17 @@ async def sentry_webhook(request: Request, db: AsyncSession = Depends(get_db)):
         elif isinstance(event_project, (int, str)):
             # Project is just an ID (for "triggered" action)
             project_id = str(event_project)
-            project_name = 'unknown'  # Will try to get from other sources
+            project_name = 'unknown'  # Will try to get from API or other sources
             project_slug = None
+            
+            # Try to fetch project info from Sentry API if configured
+            if settings.SENTRY_API_TOKEN:
+                logger.info(f"Fetching project info from Sentry API for project_id={project_id}")
+                project_info = await _fetch_sentry_project_info(project_id, event_url)
+                if project_info:
+                    project_name = project_info.get('name', 'unknown')
+                    project_slug = project_info.get('slug')
+                    logger.info(f"Got project name from API: {project_name}")
         else:
             project_name = 'unknown'
             project_slug = None
