@@ -330,10 +330,15 @@ async def sentry_webhook(request: Request, db: AsyncSession = Depends(get_db)):
     - Exception type и value
     - Вся информация о проекте, issue, event
     
+    Обрабатываемые actions:
+    - "created" - новая issue создана (первое событие)
+    - "triggered" - новое событие для существующей issue (повторение ошибки)
+    - Другие actions (resolved, assigned и т.д.) игнорируются
+    
     Настройка в Sentry:
     - Settings → Integrations → Webhooks
     - URL: http://your-server:8002/sentry/webhook
-    - События: Issue Created
+    - События: Issue Created, Issue Triggered (или все события)
     
     Этот сервис НЕ подключается к Sentry - он только слушает входящие запросы.
     
@@ -355,17 +360,29 @@ async def sentry_webhook(request: Request, db: AsyncSession = Depends(get_db)):
         # Parse JSON
         try:
             payload_dict = json.loads(body.decode('utf-8'))
-            logger.info(f"Sentry payload keys: {list(payload_dict.keys())}, action: {payload_dict.get('action', 'N/A')}")
+            action = payload_dict.get('action', 'N/A')
+            logger.info(f"Sentry payload keys: {list(payload_dict.keys())}, action: {action}")
         except (json.JSONDecodeError, UnicodeDecodeError) as e:
             logger.error(f"Failed to parse JSON: {str(e)}", exc_info=True)
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid JSON: {str(e)}")
+        
+        # Check action early - process "created" and "triggered" actions
+        # "created" = new issue created (first occurrence)
+        # "triggered" = new event for existing issue (re-occurrence)
+        # Other actions like "resolved", "assigned" are ignored
+        if action not in ("created", "triggered"):
+            logger.info(f"Ignoring webhook action: {action} (only 'created' and 'triggered' actions are processed)")
+            return {
+                "message": f"Action '{action}' ignored, only 'created' and 'triggered' actions are processed",
+                "status": "ignored"
+            }
         
         # Validate payload with Pydantic (standard Sentry format)
         try:
             payload = SentryWebhookPayload(**payload_dict)
         except Exception as validation_error:
             from pydantic import ValidationError
-            logger.warning(f"Pydantic validation failed, trying flexible parsing...")
+            logger.warning(f"Pydantic validation failed for action '{action}', trying flexible parsing...")
             try:
                 flexible_payload_dict = {
                     "action": payload_dict.get("action", "created"),
@@ -374,19 +391,19 @@ async def sentry_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                     "actor": payload_dict.get("actor")
                 }
                 payload = SentryWebhookPayload(**flexible_payload_dict)
-            except Exception:
+                logger.info("Flexible parsing succeeded")
+            except Exception as flexible_error:
                 if isinstance(validation_error, ValidationError):
                     error_messages = [f"{'.'.join(str(loc) for loc in err['loc'])}: {err['msg']}" for err in validation_error.errors()]
                     error_detail = "; ".join(error_messages)
                 else:
                     error_detail = str(validation_error)
-                raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Validation error: {error_detail}. Full payload logged.")
-        
-        # Only process "created" actions
-        action = payload.action or "unknown"
-        if action != "created":
-            logger.info(f"Ignoring webhook action: {action}")
-            return {"message": f"Action '{action}' ignored, only 'created' actions are processed"}
+                logger.error(f"Both validation attempts failed. Original: {error_detail}, Flexible: {str(flexible_error)}")
+                logger.debug(f"Payload structure: {json.dumps(payload_dict, indent=2, default=str)[:1000]}")
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=f"Validation error: {error_detail}. Full payload logged."
+                )
         
         # Extract data from payload
         if not payload.data:
