@@ -18,6 +18,7 @@ import json
 import logging
 import re
 import hashlib
+import hmac
 from datetime import datetime
 from typing import Optional, Dict, Any, List, Tuple
 import httpx
@@ -50,6 +51,61 @@ def _get_value(obj: Any, *keys, default: Any = None) -> Any:
             if value is not None:
                 return value
         return default
+
+
+def _verify_sentry_webhook_signature(request: Request, body: bytes) -> bool:
+    """
+    Verify Sentry webhook signature using HMAC-SHA256.
+    
+    Sentry sends signature in X-Sentry-Signature header.
+    Format can be:
+    - "sentry_signature=hex_string" (newer format)
+    - Just hex string (older format)
+    
+    Returns True if signature is valid or if secret is not configured.
+    Returns False if signature is invalid.
+    """
+    if not settings.SENTRY_WEBHOOK_SECRET:
+        # If secret is not configured, skip verification
+        return True
+    
+    signature_header = request.headers.get("X-Sentry-Signature")
+    if not signature_header:
+        logger.warning("Missing X-Sentry-Signature header in webhook request")
+        return False
+    
+    # Extract signature value
+    # Format can be "sentry_signature=xxx" or just "xxx"
+    if "=" in signature_header:
+        # Newer format: "sentry_signature=hex_string"
+        parts = signature_header.split("=", 1)
+        if len(parts) == 2 and parts[0].strip() == "sentry_signature":
+            signature = parts[1].strip()
+        else:
+            logger.warning(f"Invalid signature header format: {signature_header}")
+            return False
+    else:
+        # Older format: just hex string
+        signature = signature_header.strip()
+    
+    try:
+        # Compute expected signature
+        expected_signature = hmac.new(
+            settings.SENTRY_WEBHOOK_SECRET.encode('utf-8'),
+            body,
+            hashlib.sha256
+        ).hexdigest()
+        
+        # Compare signatures using constant-time comparison to prevent timing attacks
+        if not hmac.compare_digest(signature, expected_signature):
+            logger.warning("Invalid webhook signature - request rejected")
+            return False
+        
+        logger.debug("Webhook signature verified successfully")
+        return True
+    except Exception as e:
+        logger.error(f"Error verifying webhook signature: {str(e)}", exc_info=True)
+        return False
 
 
 def _extract_stacktrace_from_frames(stacktrace_frames: List[Any]) -> Tuple[str, str, str]:
@@ -481,11 +537,21 @@ async def sentry_webhook(request: Request, db: AsyncSession = Depends(get_db)):
     logger.info("🔔 WEBHOOK ENDPOINT CALLED - /sentry/webhook")
     
     try:
+        # Get request body for signature verification
+        body = await request.body()
+        
+        # Verify webhook signature if secret is configured
+        if not _verify_sentry_webhook_signature(request, body):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid webhook signature"
+            )
+        
         # Parse JSON
         try:
-            payload_dict = await request.json()
+            payload_dict = json.loads(body.decode('utf-8'))
             logger.info(f"Payload keys: {list(payload_dict.keys())}, action: {payload_dict.get('action', 'N/A')}")
-        except Exception as e:
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
             logger.error(f"Failed to parse JSON: {str(e)}", exc_info=True)
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid JSON: {str(e)}")
         

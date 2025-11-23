@@ -15,6 +15,7 @@ class Settings:
     SENTRY_DSN: Optional[str] = os.getenv("SENTRY_DSN", None)
     SENTRY_PROJECT: Optional[str] = os.getenv("SENTRY_PROJECT", None)  # Optional project filter
     SENTRY_FILTER_BY_PROJECT: bool = os.getenv("SENTRY_FILTER_BY_PROJECT", "false").lower() == "true"
+    SENTRY_WEBHOOK_SECRET: Optional[str] = os.getenv("SENTRY_WEBHOOK_SECRET", None)  # Secret for webhook signature verification
     
     # GlitchTip API configuration (optional, for fetching detailed issue info)
     GLITCHTIP_API_TOKEN: Optional[str] = os.getenv("GLITCHTIP_API_TOKEN", None)
