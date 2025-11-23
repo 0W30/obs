@@ -22,6 +22,7 @@ import hashlib
 import hmac
 from datetime import datetime
 from typing import Optional, Dict, Any, List, Tuple
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -462,9 +463,24 @@ async def sentry_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                         project = data_dict.get("project")
         
         # Extract project information
-        project_name = _get_value(project, 'name', 'slug', default='unknown') or _get_value(issue, 'project', 'name', 'slug', default='unknown') or 'unknown'
-        project_slug = _get_value(project, 'slug') or _get_value(issue, 'project', 'slug')
-        project_id = _get_value(project, 'id') or _get_value(issue, 'project', 'id')
+        # For "triggered" action, project might be inside event instead of data.project
+        event_project = _get_value(event, 'project')
+        project_name = (
+            _get_value(project, 'name', 'slug', default='unknown') or 
+            _get_value(issue, 'project', 'name', 'slug', default='unknown') or
+            _get_value(event_project, 'name', 'slug', default='unknown') if isinstance(event_project, dict) else
+            (event_project if isinstance(event_project, str) else 'unknown')
+        ) or 'unknown'
+        project_slug = (
+            _get_value(project, 'slug') or 
+            _get_value(issue, 'project', 'slug') or
+            (_get_value(event_project, 'slug') if isinstance(event_project, dict) else None)
+        )
+        project_id = (
+            _get_value(project, 'id') or 
+            _get_value(issue, 'project', 'id') or
+            (_get_value(event_project, 'id') if isinstance(event_project, dict) else None)
+        )
         
         # Optional project filtering
         if settings.SENTRY_FILTER_BY_PROJECT and settings.SENTRY_PROJECT:
