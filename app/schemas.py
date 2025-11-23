@@ -37,8 +37,12 @@ class SentryEvent(BaseModel):
     logger: Optional[str] = None
     exceptions: Optional[List[SentryException]] = None
     stacktrace: Optional[SentryStacktrace] = None
-    tags: Optional[Dict[str, str]] = None
+    # Tags can be either Dict[str, str] or List[List[str]] (Sentry sends both formats)
+    tags: Optional[Union[Dict[str, str], List[List[str]], Any]] = None
     extra: Optional[Dict[str, Any]] = None
+    
+    class Config:
+        extra = "allow"  # Allow extra fields for flexibility
 
 
 class SentryIssue(BaseModel):

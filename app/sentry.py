@@ -377,36 +377,66 @@ async def sentry_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                 "status": "ignored"
             }
         
+        # Log payload structure for debugging
+        logger.info(f"Payload structure: action={action}, has_data={bool(payload_dict.get('data'))}")
+        if payload_dict.get("data"):
+            data_dict = payload_dict["data"]
+            logger.info(f"  data.issue: {bool(data_dict.get('issue'))}, data.event: {bool(data_dict.get('event'))}, data.project: {bool(data_dict.get('project'))}")
+            if data_dict.get("event"):
+                event_dict = data_dict["event"]
+                logger.info(f"  event keys: {list(event_dict.keys())[:10]}")  # First 10 keys
+                if "tags" in event_dict:
+                    tags_value = event_dict["tags"]
+                    logger.info(f"  event.tags type: {type(tags_value).__name__}, value preview: {str(tags_value)[:200]}")
+        
+        # Log full payload structure for debugging (first 2000 chars) - only in debug mode
+        payload_preview = json.dumps(payload_dict, indent=2, default=str)
+        logger.debug(f"Full payload preview (first 2000 chars):\n{payload_preview[:2000]}")
+        
         # Validate payload with Pydantic (standard Sentry format)
+        # Use model_validate with mode='json' for more flexible parsing
         try:
-            payload = SentryWebhookPayload(**payload_dict)
+            payload = SentryWebhookPayload.model_validate(payload_dict)
         except Exception as validation_error:
             from pydantic import ValidationError
             logger.warning(f"Pydantic validation failed for action '{action}', trying flexible parsing...")
+            if isinstance(validation_error, ValidationError):
+                error_messages = [f"{'.'.join(str(loc) for loc in err['loc'])}: {err['msg']}" for err in validation_error.errors()]
+                logger.debug(f"Validation errors: {error_messages}")
+            
+            # Try to create payload with minimal validation - just extract what we need
             try:
+                # Create a minimal valid structure
                 flexible_payload_dict = {
-                    "action": payload_dict.get("action", "created"),
+                    "action": payload_dict.get("action"),
                     "data": payload_dict.get("data", {}),
                     "installation": payload_dict.get("installation"),
                     "actor": payload_dict.get("actor")
                 }
-                payload = SentryWebhookPayload(**flexible_payload_dict)
+                # Use model_validate with mode='json' and allow extra fields
+                payload = SentryWebhookPayload.model_validate(flexible_payload_dict, strict=False)
                 logger.info("Flexible parsing succeeded")
             except Exception as flexible_error:
-                if isinstance(validation_error, ValidationError):
-                    error_messages = [f"{'.'.join(str(loc) for loc in err['loc'])}: {err['msg']}" for err in validation_error.errors()]
-                    error_detail = "; ".join(error_messages)
+                # Last resort: log full payload and try to process without strict validation
+                logger.error(f"Both validation attempts failed. Original: {str(validation_error)}, Flexible: {str(flexible_error)}")
+                logger.error(f"Full payload (first 5000 chars):\n{payload_preview[:5000]}")
+                
+                # Try to extract data directly from dict without Pydantic validation
+                # This allows processing even if schema doesn't match exactly
+                if "data" in payload_dict and isinstance(payload_dict["data"], dict):
+                    logger.warning("Attempting to process payload without strict Pydantic validation...")
+                    # We'll process it manually below
+                    payload = None
                 else:
-                    error_detail = str(validation_error)
-                logger.error(f"Both validation attempts failed. Original: {error_detail}, Flexible: {str(flexible_error)}")
-                logger.debug(f"Payload structure: {json.dumps(payload_dict, indent=2, default=str)[:1000]}")
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail=f"Validation error: {error_detail}. Full payload logged."
-                )
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        detail=f"Validation error: {str(validation_error)}. Full payload logged."
+                    )
         
         # Extract data from payload
-        if not payload.data:
+        # Handle both validated payload and raw dict (when validation failed but we still want to process)
+        if payload is None or not payload.data:
+            # Fallback to direct dict extraction
             if "data" in payload_dict:
                 data_dict = payload_dict["data"]
                 issue = data_dict.get("issue") if isinstance(data_dict, dict) else None
@@ -415,9 +445,21 @@ async def sentry_webhook(request: Request, db: AsyncSession = Depends(get_db)):
             else:
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Webhook payload missing 'data' field")
         else:
+            # Use validated payload
             issue = payload.data.issue
             event = payload.data.event
             project = payload.data.project
+            
+            # If validated payload has None values, try to get from raw dict
+            if issue is None or event is None:
+                if "data" in payload_dict:
+                    data_dict = payload_dict["data"]
+                    if issue is None:
+                        issue = data_dict.get("issue")
+                    if event is None:
+                        event = data_dict.get("event")
+                    if project is None:
+                        project = data_dict.get("project")
         
         # Extract project information
         project_name = _get_value(project, 'name', 'slug', default='unknown') or _get_value(issue, 'project', 'name', 'slug', default='unknown') or 'unknown'
@@ -442,7 +484,8 @@ async def sentry_webhook(request: Request, db: AsyncSession = Depends(get_db)):
             else:
                 event_id = f"unknown-{datetime.now().strftime('%Y%m%d%H%M%S%f')[:-3]}"
         
-        logger.info(f"Received webhook: action={payload.action}, project={project_name}, event_id={event_id}")
+        action_value = payload.action if payload else action
+        logger.info(f"Received webhook: action={action_value}, project={project_name}, event_id={event_id}")
         
         # Check if error already exists (prevent duplicate events within same second)
         result = await db.execute(select(Error).where(Error.event_id == event_id))
