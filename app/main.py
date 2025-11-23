@@ -8,7 +8,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from app.database import init_db
-from app.routers import errors
+from app.routers import errors, glitchtip
 from app import sentry
 from app.config import settings
 
@@ -40,7 +40,8 @@ async def lifespan(app: FastAPI):
     logger.info("📡 Available endpoints:")
     logger.info("   GET  / - API info")
     logger.info("   GET  /health - Health check")
-    logger.info("   POST /sentry/webhook - Sentry/GlitchTip webhook")
+    logger.info("   POST /sentry/webhook - Sentry webhook")
+    logger.info("   POST /glitchtip/webhook - GlitchTip webhook")
     logger.info("   GET  /errors - All errors")
     logger.info("   GET  /errors/latest - Latest error")
     logger.info("   GET  /errors/latest/stacktrace - Latest error stacktrace")
@@ -96,6 +97,7 @@ app.add_middleware(
 
 # Include routers
 app.include_router(sentry.router)
+app.include_router(glitchtip.router)
 app.include_router(errors.router)
 
 
@@ -109,6 +111,7 @@ async def root():
         "version": "1.0.0",
         "endpoints": {
             "sentry_webhook": "/sentry/webhook",
+            "glitchtip_webhook": "/glitchtip/webhook",
             "latest_error": "/errors/latest",
             "all_errors": "/errors",
             "config": "/config"
