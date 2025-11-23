@@ -277,8 +277,9 @@ async def _send_to_resolve_service(error: Error) -> bool:
             )
             return False
         
-        # Extract project name - use from error, fallback to "unknown"
-        project_name = error.project or "unknown"
+        # Extract project name - use project_slug (short name like "uni-s") if available, otherwise use project (full name)
+        # Resolve service expects project_slug (short identifier), not full project name
+        project_name = error.project_slug or "unknown"
         
         # Prepare payload according to resolve service contract
         # stacktrace is required and must be non-empty
