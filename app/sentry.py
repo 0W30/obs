@@ -183,6 +183,9 @@ async def _send_to_resolve_service(error: Error) -> bool:
     Send error data to external resolve service.
     Returns True if successful, False otherwise.
     Does not raise exceptions - logs errors but doesn't interrupt main flow.
+    
+    IMPORTANT: Resolve service requires non-empty stacktrace.
+    If stacktrace is empty, request is not sent.
     """
     if not settings.RESOLVE_SERVICE_ENABLED or not settings.RESOLVE_SERVICE_URL:
         return False
@@ -191,18 +194,24 @@ async def _send_to_resolve_service(error: Error) -> bool:
         # Prepare payload according to resolve service contract
         stacktrace = error.stacktrace_detailed or error.stacktrace or ""
         
+        # Resolve service requires non-empty stacktrace
+        # If stacktrace is empty, skip sending to avoid 400 error
+        if not stacktrace or not stacktrace.strip():
+            logger.warning(f"Skipping resolve service: empty stacktrace for event_id={error.event_id}")
+            return False
+        
         # Extract project name - use from error, fallback to "unknown"
         project_name = error.project or "unknown"
         
         # Prepare payload according to resolve service contract
-        # stacktrace is required, others are optional but should be present
+        # stacktrace is required and must be non-empty
         payload = {
             "exception_type": error.exception_type,
             "exception_value": error.exception_value,
             "message": error.message or "",
             "project_name": project_name,
             "send_to_tracker": True,
-            "stacktrace": stacktrace,  # Required - at least empty string
+            "stacktrace": stacktrace,  # Required - must be non-empty
             "tracker_queue": settings.TRACKER_QUEUE
         }
         
@@ -226,16 +235,26 @@ def _extract_stacktrace_from_event(event: Any) -> Tuple[Optional[str], Optional[
     """
     Extract exception and stacktrace from event.
     Works with both dict and Pydantic models.
+    Supports multiple formats:
+    - exceptions[].stacktrace.frames (standard format for "created" action)
+    - event.exception.values[].stacktrace.frames (format for "triggered" action)
+    - event.stacktrace.frames (event level)
+    - entries[].data.values[].stacktrace.frames (alternative format)
+    
     Returns: (exception_type, exception_value, stacktrace, stacktrace_files, stacktrace_detailed)
     """
     if not event:
         return None, None, None, None, None
     
-    exceptions_list = _get_value(event, 'exceptions')
+    # Convert to dict if needed
+    event_dict = event if isinstance(event, dict) else (event.model_dump() if hasattr(event, 'model_dump') else {})
+    
     exception_type = None
     exception_value = None
     stacktrace_frames = None
     
+    # Try to extract from exceptions (standard format for "created" action)
+    exceptions_list = _get_value(event, 'exceptions')
     if exceptions_list and len(exceptions_list) > 0:
         exc = exceptions_list[0]
         
@@ -254,7 +273,39 @@ def _extract_stacktrace_from_event(event: Any) -> Tuple[Optional[str], Optional[
             else:
                 stacktrace_frames = _get_value(exc_stacktrace, 'frames')
     
-    # If stacktrace not found in exception, try event level
+    # Try event.exception.values[] format (for "triggered" action)
+    # This is the format Sentry uses for triggered webhooks
+    if not stacktrace_frames:
+        event_exception = _get_value(event, 'exception')
+        if event_exception:
+            # Handle both dict and Pydantic models
+            if isinstance(event_exception, dict):
+                exception_values = event_exception.get('values', [])
+            elif hasattr(event_exception, 'values'):
+                exception_values = event_exception.values
+            else:
+                exception_values = _get_value(event_exception, 'values', default=[])
+            
+            if exception_values and len(exception_values) > 0:
+                exc = exception_values[0]
+                
+                # Extract exception info
+                if not exception_type:
+                    exception_type = _get_value(exc, 'type')
+                if not exception_value:
+                    exception_value = _get_value(exc, 'value')
+                
+                # Extract stacktrace
+                exc_stacktrace = _get_value(exc, 'stacktrace')
+                if exc_stacktrace:
+                    if isinstance(exc_stacktrace, dict):
+                        stacktrace_frames = exc_stacktrace.get('frames')
+                    elif hasattr(exc_stacktrace, 'frames'):
+                        stacktrace_frames = exc_stacktrace.frames
+                    else:
+                        stacktrace_frames = _get_value(exc_stacktrace, 'frames')
+    
+    # If stacktrace not found, try event level
     if not stacktrace_frames:
         event_stacktrace = _get_value(event, 'stacktrace')
         if event_stacktrace:
@@ -265,6 +316,24 @@ def _extract_stacktrace_from_event(event: Any) -> Tuple[Optional[str], Optional[
                 stacktrace_frames = event_stacktrace.get('frames')
             else:
                 stacktrace_frames = _get_value(event_stacktrace, 'frames')
+    
+    # If still not found, try entries format (alternative format)
+    if not stacktrace_frames and 'entries' in event_dict:
+        entries = event_dict.get('entries', [])
+        for entry in entries:
+            entry_type = entry.get('type')
+            if entry_type == 'exception' and 'data' in entry:
+                exc_data = entry['data']
+                if 'values' in exc_data and exc_data['values']:
+                    exc = exc_data['values'][0]
+                    if 'stacktrace' in exc and 'frames' in exc['stacktrace']:
+                        stacktrace_frames = exc['stacktrace']['frames']
+                        # Also extract exception info if not already found
+                        if not exception_type:
+                            exception_type = exc.get('type')
+                        if not exception_value:
+                            exception_value = exc.get('value')
+                        break
     
     if stacktrace_frames:
         stacktrace, stacktrace_files, stacktrace_detailed = _extract_stacktrace_from_frames(stacktrace_frames)
@@ -523,6 +592,12 @@ async def sentry_webhook(request: Request, db: AsyncSession = Depends(get_db)):
         
         # Extract exception and stacktrace
         exception_type, exception_value, stacktrace, stacktrace_files, stacktrace_detailed = _extract_stacktrace_from_event(event)
+        
+        # Log event structure for debugging if stacktrace is missing
+        if not stacktrace and event:
+            event_dict = event if isinstance(event, dict) else (event.model_dump() if hasattr(event, 'model_dump') else {})
+            logger.warning(f"No stacktrace found in event. Event keys: {list(event_dict.keys())[:20]}")
+            logger.debug(f"Event structure (first 1000 chars): {json.dumps(event_dict, indent=2, default=str)[:1000]}")
         
         # Extract breadcrumbs
         breadcrumbs = _extract_breadcrumbs_from_event(event)
