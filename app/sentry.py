@@ -149,7 +149,7 @@ async def _send_to_resolve_service(error: Error) -> bool:
             "tracker_queue": settings.TRACKER_QUEUE
         }
         
-        url = f"{settings.RESOLVE_SERVICE_URL.rstrip('/')}/resole"
+        url = f"{settings.RESOLVE_SERVICE_URL.rstrip('/')}/resolve"
         headers = {"Content-Type": "application/json"}
         
         async with httpx.AsyncClient(timeout=10.0) as client:
