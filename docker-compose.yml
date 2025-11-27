@@ -5,23 +5,23 @@ services:
     build: .
     container_name: sentry-error-collector
     ports:
-      - "8002:8000"
+      - "${API_PORT:-8000}:8000"
     volumes:
       - ./data:/data
     environment:
       - DATABASE_URL=sqlite+aiosqlite:////data/errors.db
       # Sentry/GlitchTip configuration
-      - SENTRY_DSN=${SENTRY_DSN:-}
-      - SENTRY_PROJECT=${SENTRY_PROJECT:-}
-      - SENTRY_FILTER_BY_PROJECT=${SENTRY_FILTER_BY_PROJECT:-false}
-      - SENTRY_WEBHOOK_SECRET=${SENTRY_WEBHOOK_SECRET:-}
+      - SENTRY_DSN=${SENTRY_DSN:-} #TODO: remove 
+      - SENTRY_PROJECT=${SENTRY_PROJECT:-} #TODO: remove 
+      - SENTRY_FILTER_BY_PROJECT=${SENTRY_FILTER_BY_PROJECT:-false} #TODO: remove 
+      - SENTRY_WEBHOOK_SECRET=${SENTRY_WEBHOOK_SECRET:-} #TODO: remove 
       - SENTRY_API_TOKEN=${SENTRY_API_TOKEN:-}
       - SENTRY_ORG=${SENTRY_ORG:-}
       - SENTRY_BASE_URL=${SENTRY_BASE_URL:-https://sentry.io}
       # GlitchTip API configuration (optional, for fetching detailed issue info)
       - GLITCHTIP_API_TOKEN=${GLITCHTIP_API_TOKEN:-}
       - GLITCHTIP_BASE_URL=${GLITCHTIP_BASE_URL:-}
-      # External resolve service configuration (optional, for sending resolved errors)
+      
       - RESOLVE_SERVICE_URL=${RESOLVE_SERVICE_URL:-}
       - RESOLVE_SERVICE_ENABLED=${RESOLVE_SERVICE_ENABLED:-true}
       - TRACKER_QUEUE=${TRACKER_QUEUE:-TEST}
